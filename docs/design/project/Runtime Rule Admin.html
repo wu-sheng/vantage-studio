@@ -1,0 +1,179 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Runtime Rule Admin — design exploration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #f0eee9; font-family: Inter, system-ui, sans-serif; }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="catalog.jsx"></script>
+<script type="text/babel" src="editor.jsx"></script>
+<script type="text/babel" src="debugger.jsx"></script>
+<script type="text/babel" src="surfaces.jsx"></script>
+<script type="text/babel" src="lal-oal.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="intro" title="Runtime Rule Admin" subtitle="SkyWalking · MAL / LAL / (OAL soon) · UI + CLI exploration">
+        <DCArtboard id="reasoning" label="00 · design reasoning" width={820} height={1180}>
+          <div style={{ width: 820, height: 1180, background: rrDark.bg, color: rrDark.ink, fontFamily: RR_FONT_UI, padding: '28px 34px', overflow: 'auto', borderRadius: 6 }}>
+            <div style={{ fontFamily: RR_FONT_MONO, fontSize: 11, color: rrDark.active, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 16 }}>design note</div>
+            <h2 style={{ fontSize: 22, color: rrDark.heading, fontWeight: 500, margin: '0 0 12px' }}>What this is</h2>
+            <p style={{ fontSize: 13.5, lineHeight: 1.65, color: rrDark.ink2, margin: '0 0 18px' }}>
+              A web admin for the runtime-rule hot-update system — browse <span style={{ color: rrDark.active, fontFamily: RR_FONT_MONO }}>otel-rules</span>, <span style={{ color: rrDark.active, fontFamily: RR_FONT_MONO }}>log-mal-rules</span>, <span style={{ color: rrDark.active, fontFamily: RR_FONT_MONO }}>lal</span> (and later <span style={{ color: rrDark.dim, fontFamily: RR_FONT_MONO }}>oal</span>), edit YAML, push via <span style={{ fontFamily: RR_FONT_MONO, color: rrDark.info }}>/addOrUpdate</span>, watch cluster convergence, and <strong style={{ color: rrDark.heading }}>live-debug</strong> a rule by visualising the per-stage SampleFamily capture OAP returns for a recent push window.
+            </p>
+
+            <h3 style={{ fontSize: 15, color: rrDark.heading, fontWeight: 500, margin: '16px 0 8px' }}>Key design stances</h3>
+            <ul style={{ fontSize: 13, lineHeight: 1.7, color: rrDark.ink2, paddingLeft: 18, margin: 0 }}>
+              <li><strong>Debugger is a visualizer, not a simulator.</strong> OAP captures SampleFamily at every workflow step on the real push path; the UI renders whatever ordered list of steps the backend returns. Step count and names vary per rule.</li>
+              <li><strong>SampleFamily as the atom.</strong> Prom-style <span style={{ fontFamily: RR_FONT_MONO, color: rrDark.info }}>{'{labels} → value'}</span> rendered consistently at every stage; transformations shown as before → after rather than code tracing.</li>
+              <li><strong>No dry-run.</strong> Validation + DSL assistant + linting only — the live way to validate is push and observe.</li>
+              <li><strong>FILTER_ONLY vs STRUCTURAL is surfaced everywhere.</strong> Classifier is the single most decision-shaping piece of state.</li>
+              <li><strong>allowStorageChange is a typed-confirm gate.</strong> Two-step with the metric diff enumerated.</li>
+              <li><strong>Cluster state is medium-depth.</strong> per-node localState, contentHash, lastApplyError. Suspend/Resume RPC log on the side.</li>
+              <li><strong>Aesthetic:</strong> Pro dev-tool. Dark warm-charcoal. Inter for chrome, JetBrains Mono for code, hash, and values. One amber accent.</li>
+            </ul>
+
+            <h3 style={{ fontSize: 15, color: rrDark.heading, fontWeight: 500, margin: '20px 0 8px' }}>Interaction interfaces</h3>
+            <p style={{ fontSize: 12.5, lineHeight: 1.6, color: rrDark.ink2, margin: '0 0 10px' }}>
+              Every page here is one surface on top of a shared backend contract. The same operations must be reachable from three interfaces — <strong style={{ color: rrDark.heading }}>Web UI</strong> (this design), <strong style={{ color: rrDark.heading }}>GraphQL</strong> (OAP management API, what the UI talks to), and <strong style={{ color: rrDark.heading }}>CLI</strong> (<span style={{ fontFamily: RR_FONT_MONO, color: rrDark.active }}>swctl</span>, for scripted ops + CI/CD) — so humans, automation, and GitOps pipelines all hit the same primitives.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr 0.9fr 0.9fr', rowGap: 4, columnGap: 10, fontSize: 11.5, fontFamily: RR_FONT_MONO, alignItems: 'center', border: `1px solid ${rrDark.border}`, borderRadius: 4, padding: '10px 12px', background: rrDark.bg2 }}>
+              <span style={{ color: rrDark.dim, fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' }}>Page</span>
+              <span style={{ color: rrDark.dim, fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' }}>Web UI</span>
+              <span style={{ color: rrDark.dim, fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' }}>GraphQL</span>
+              <span style={{ color: rrDark.dim, fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' }}>swctl CLI</span>
+
+              <span style={{ color: rrDark.ink }}>Catalog browser</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● listRules / getRule</span>
+              <span style={{ color: rrDark.ok }}>● rule list / get</span>
+
+              <span style={{ color: rrDark.ink }}>YAML editor</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● addOrUpdateRule</span>
+              <span style={{ color: rrDark.ok }}>● rule apply -f</span>
+
+              <span style={{ color: rrDark.ink }}>Live debugger (MAL)</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● captureWorkflow</span>
+              <span style={{ color: rrDark.warn }}>◐ rule debug (json dump)</span>
+
+              <span style={{ color: rrDark.ink }}>LAL catalog + debugger</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● lal list / debug</span>
+              <span style={{ color: rrDark.warn }}>◐ lal list / debug</span>
+
+              <span style={{ color: rrDark.ink }}>OAL catalog + debugger</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● oal list / debug</span>
+              <span style={{ color: rrDark.warn }}>◐ oal list / debug</span>
+
+              <span style={{ color: rrDark.ink }}>Cluster status</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● clusterRuleState</span>
+              <span style={{ color: rrDark.ok }}>● rule cluster-state</span>
+
+              <span style={{ color: rrDark.ink }}>History · diff · rollback</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● listRevisions / rollback</span>
+              <span style={{ color: rrDark.ok }}>● rule history / rollback</span>
+
+              <span style={{ color: rrDark.ink }}>Dump & restore</span>
+              <span style={{ color: rrDark.warn }}>◐ trigger + download</span>
+              <span style={{ color: rrDark.ok }}>● dumpAll / restore</span>
+              <span style={{ color: rrDark.ok }}>● rule dump / restore (primary)</span>
+
+              <span style={{ color: rrDark.ink }}>DSL Management · validate</span>
+              <span style={{ color: rrDark.ok }}>● primary</span>
+              <span style={{ color: rrDark.ok }}>● validateRule</span>
+              <span style={{ color: rrDark.ok }}>● rule validate</span>
+
+              <span style={{ color: rrDark.ink }}>DSL Management · destructive confirm</span>
+              <span style={{ color: rrDark.ok }}>● typed-confirm UI</span>
+              <span style={{ color: rrDark.ok }}>● addOrUpdate(allowStorageChange=true)</span>
+              <span style={{ color: rrDark.warn }}>◐ --allow-storage-change flag</span>
+            </div>
+            <p style={{ fontSize: 11, lineHeight: 1.55, color: rrDark.dim, margin: '8px 0 0', fontFamily: RR_FONT_MONO }}>
+              ● full parity &nbsp;·&nbsp; ◐ partial / secondary &nbsp;·&nbsp; GraphQL is the ground truth; UI + CLI are peer clients.
+            </p>
+
+            <h3 style={{ fontSize: 15, color: rrDark.heading, fontWeight: 500, margin: '20px 0 8px' }}>What's in this canvas</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', rowGap: 6, columnGap: 14, fontSize: 12.5, fontFamily: RR_FONT_MONO }}>
+              <span style={{ color: rrDark.dim }}>Catalog browser (MAL)</span><span style={{ color: rrDark.ink }}>Grouped cards · origin-first</span>
+              <span style={{ color: rrDark.dim }}>LAL catalog + debugger</span><span style={{ color: rrDark.ink }}>filter → parser → extractor → sink</span>
+              <span style={{ color: rrDark.dim }}>OAL catalog + debugger</span><span style={{ color: rrDark.ink }}>source → filter → aggregation → entity</span>
+              <span style={{ color: rrDark.dim }}>Editor</span><span style={{ color: rrDark.ink }}>Form-assisted · no-YAML mode</span>
+              <span style={{ color: rrDark.dim }}>Live debugger (MAL)</span><span style={{ color: rrDark.ink }}>Waterfall · stage-by-stage SampleFamily</span>
+              <span style={{ color: rrDark.dim }}>Cluster status</span><span style={{ color: rrDark.ink }}>per-node state matrix + broadcast log</span>
+              <span style={{ color: rrDark.dim }}>History · diff · rollback</span><span style={{ color: rrDark.ink }}>revisions, classifier, diff</span>
+              <span style={{ color: rrDark.dim }}>Dump & restore</span><span style={{ color: rrDark.ink }}>tarball export, DR baseline</span>
+              <span style={{ color: rrDark.dim }}>DSL Management</span><span style={{ color: rrDark.ink }}>validate · assistant · destructive confirm (allowStorageChange)</span>
+            </div>
+
+            <div style={{ marginTop: 22, padding: '12px 14px', background: rrDark.bg2, border: `1px solid ${rrDark.border}`, borderRadius: 5, fontSize: 12, color: rrDark.ink2, lineHeight: 1.55 }}>
+              <strong style={{ color: rrDark.accent }}>Top-level menu:</strong> Catalogs · Cluster status · History·diff·rollback · Dump & restore · DSL Management. Destructive confirm (<span style={{ fontFamily: RR_FONT_MONO }}>allowStorageChange</span>) lives under DSL Management.
+            </div>
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="catalog" title="Catalog browser" subtitle="Browse, filter, and drill into rules per catalog">
+        <DCArtboard id="cat-c" label="Grouped cards · chosen direction" width={1200} height={780}><CatalogC_Groups /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="editor" title="YAML editor" subtitle="Form-assisted mode · no-YAML path">
+        <DCArtboard id="ed-c" label="Form-assisted · chosen direction" width={1200} height={780}><EditorC_FormAssisted /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="debugger" title="Live debugger" subtitle="Waterfall · stage-by-stage SampleFamily with entity scope">
+        <DCArtboard id="dbg-b" label="Waterfall · chosen direction" width={1200} height={880}><DebuggerB_Waterfall /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="lal" title="LAL — Log Analysis Language" subtitle="Groovy DSL · filter { parser · extractor · sink } · bound by layer">
+        <DCArtboard id="lal-catalog" label="LAL catalog · bundled + runtime rules" width={1200} height={780}><LalCatalog /></DCArtboard>
+        <DCArtboard id="lal-debug" label="LAL debugger · envoy-als · per-record × per-block grid" width={1500} height={820}><LalDebugger /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="oal" title="OAL — Observability Analysis Language" subtitle="from(Source.*).filter(...).aggregation(...) · compiled at boot · runtime override hot-swap">
+        <DCArtboard id="oal-catalog" label="OAL catalog · bundled .oal + runtime overrides" width={1200} height={780}><OalCatalog /></DCArtboard>
+        <DCArtboard id="oal-debug" label="OAL debugger · endpoint_cpm · source → entity → store" width={1200} height={900}><OalDebugger /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="cluster-status" title="Cluster status" subtitle="Per-node state · broadcast log · convergence">
+        <DCArtboard id="cluster" label="Cluster status" width={1200} height={780}><ClusterStatus /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="history" title="History · diff · rollback" subtitle="Revisions, change classifier, side-by-side diff">
+        <DCArtboard id="history" label="History · diff · rollback" width={1200} height={780}><HistoryDiff /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="dump" title="Dump & restore" subtitle="Tarball export / DR baseline / restore">
+        <DCArtboard id="dump" label="Dump & restore" width={1200} height={780}><DumpRestore /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="dsl" title="DSL Management" subtitle="Validate · assistant · destructive-confirm gates">
+        <DCArtboard id="dsl-destructive" label="Destructive confirm · allowStorageChange (part of DSL Management)" width={1200} height={780}><DestructiveConfirm /></DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

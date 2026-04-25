@@ -1,0 +1,143 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Runtime Rule Admin — print</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #f0eee9; font-family: Inter, system-ui, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .page {
+    width: 1240px;
+    padding: 24px 20px 30px;
+    box-sizing: border-box;
+    page-break-after: always;
+    break-after: page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    background: #f0eee9;
+  }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  .page-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 14px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  .page-kicker { font-size: 11px; color: #8a8475; letter-spacing: 1px; text-transform: uppercase; }
+  .page-title { font-size: 13px; color: #2a2721; font-weight: 500; }
+  .page-sub { font-size: 11px; color: #8a8475; margin-left: auto; }
+  .artboard-wrap { width: 1200px; margin: 0 auto; }
+  @media print {
+    @page { size: 1280px 900px; margin: 0; }
+    html, body { background: white; }
+    .page { background: white; }
+  }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="catalog.jsx"></script>
+<script type="text/babel" src="editor.jsx"></script>
+<script type="text/babel" src="debugger.jsx"></script>
+<script type="text/babel" src="surfaces.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+function Page({ section, title, sub, children, w = 1200, h = 780 }) {
+  return (
+    <div className="page">
+      <div className="page-head">
+        <span className="page-kicker">{section}</span>
+        <span className="page-title">{title}</span>
+        <span className="page-sub">{sub}</span>
+      </div>
+      <div className="artboard-wrap" style={{ width: w, height: h, overflow: 'hidden', borderRadius: 6, boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function PrintDoc() {
+  return (
+    <>
+      <div className="page">
+        <div style={{ width: 1000, margin: '30px auto 0', background: rrDark.bg, color: rrDark.ink, fontFamily: RR_FONT_UI, padding: '40px 50px', borderRadius: 8 }}>
+          <div style={{ fontFamily: RR_FONT_MONO, fontSize: 12, color: rrDark.active, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 18 }}>skywalking · runtime rule admin · design exploration</div>
+          <h1 style={{ fontSize: 34, color: rrDark.heading, fontWeight: 500, margin: '0 0 12px', letterSpacing: -0.3 }}>Runtime Rule Admin</h1>
+          <div style={{ fontSize: 15, color: rrDark.ink2, lineHeight: 1.6, marginBottom: 28, maxWidth: 760 }}>
+            A web admin for the runtime-rule hot-update system — browse <span style={{ color: rrDark.active, fontFamily: RR_FONT_MONO }}>otel-rules</span>, <span style={{ color: rrDark.active, fontFamily: RR_FONT_MONO }}>log-mal-rules</span>, <span style={{ color: rrDark.active, fontFamily: RR_FONT_MONO }}>lal</span> (and later <span style={{ color: rrDark.dim, fontFamily: RR_FONT_MONO }}>oal</span>), edit YAML, push via <span style={{ fontFamily: RR_FONT_MONO, color: rrDark.info }}>/addOrUpdate</span>, watch cluster convergence, and live-debug a rule by visualising the per-stage SampleFamily capture OAP returns for a recent push window.
+          </div>
+          <h3 style={{ fontSize: 15, color: rrDark.heading, fontWeight: 500, margin: '20px 0 10px', fontFamily: RR_FONT_MONO, letterSpacing: 0.5 }}>KEY STANCES</h3>
+          <ul style={{ fontSize: 13, lineHeight: 1.75, color: rrDark.ink2, paddingLeft: 20, margin: 0 }}>
+            <li><strong style={{ color: rrDark.heading }}>Debugger is a visualizer, not a simulator.</strong> OAP captures SampleFamily at every workflow step on the real push path; the UI renders whatever ordered list of steps the backend returns.</li>
+            <li><strong style={{ color: rrDark.heading }}>SampleFamily as the atom.</strong> Prom-style {'{labels} → value'} rendered consistently at every stage.</li>
+            <li><strong style={{ color: rrDark.heading }}>No dry-run.</strong> Validation + DSL assistant + linting only — push and observe to validate.</li>
+            <li><strong style={{ color: rrDark.heading }}>FILTER_ONLY vs STRUCTURAL</strong> classifier surfaced everywhere.</li>
+            <li><strong style={{ color: rrDark.heading }}>allowStorageChange</strong> is a typed-confirm gate with metric diff enumerated.</li>
+            <li><strong style={{ color: rrDark.heading }}>Aesthetic:</strong> Pro dev-tool, dark warm-charcoal. Inter for chrome, JetBrains Mono for code.</li>
+          </ul>
+          <h3 style={{ fontSize: 15, color: rrDark.heading, fontWeight: 500, margin: '26px 0 10px', fontFamily: RR_FONT_MONO, letterSpacing: 0.5 }}>CONTENTS</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr auto', rowGap: 8, columnGap: 16, fontSize: 13, fontFamily: RR_FONT_MONO, color: rrDark.ink2 }}>
+            {[
+              ['01', 'Catalog · A · Dense table'],
+              ['02', 'Catalog · B · Terminal columnar'],
+              ['03', 'Catalog · C · Grouped cards'],
+              ['04', 'Editor · A · Split + inspector'],
+              ['05', 'Editor · B · Full-bleed + inline capture preview'],
+              ['06', 'Editor · C · Form-assisted (no YAML)'],
+              ['07', 'Debugger · A · Pipeline strip'],
+              ['08', 'Debugger · B · Waterfall single-sample trace'],
+              ['09', 'Debugger · C · Dual pane YAML ↔ samples'],
+              ['10', 'Cluster status'],
+              ['11', 'History · diff · rollback'],
+              ['12', 'Dump & restore'],
+              ['13', 'Destructive confirm (allowStorageChange)'],
+            ].map(([n, t]) => (
+              <React.Fragment key={n}>
+                <span style={{ color: rrDark.dim }}>{n}</span>
+                <span style={{ color: rrDark.ink }}>{t}</span>
+                <span style={{ color: rrDark.dim }}>·</span>
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <Page section="01 · catalog" title="A · Dense table" sub="Linear/Datadog lineage"><CatalogA_Table /></Page>
+      <Page section="02 · catalog" title="B · Terminal columnar" sub="For CLI-native users"><CatalogB_Terminal /></Page>
+      <Page section="03 · catalog" title="C · Grouped cards" sub="Origin-first"><CatalogC_Groups /></Page>
+      <Page section="04 · editor" title="A · Split" sub="Editor + inspector"><EditorA_Split /></Page>
+      <Page section="05 · editor" title="B · Full-bleed" sub="Inline capture preview"><EditorB_FullBleed /></Page>
+      <Page section="06 · editor" title="C · Form-assisted" sub="No-YAML mode"><EditorC_FormAssisted /></Page>
+      <Page section="07 · debugger" title="A · Pipeline strip" sub="Overview + drill-in"><DebuggerA_Pipeline /></Page>
+      <Page section="08 · debugger" title="B · Waterfall" sub="Single-sample trace"><DebuggerB_Waterfall /></Page>
+      <Page section="09 · debugger" title="C · Dual pane" sub="YAML ↔ samples"><DebuggerC_DualPane /></Page>
+      <Page section="10 · cluster" title="Cluster status" sub="Per-node state + broadcast log"><ClusterStatus /></Page>
+      <Page section="11 · history" title="History · diff · rollback" sub="Revisions"><HistoryDiff /></Page>
+      <Page section="12 · DR" title="Dump & restore" sub="DR baseline"><DumpRestore /></Page>
+      <Page section="13 · confirm" title="Destructive confirm" sub="allowStorageChange typed-confirm"><DestructiveConfirm /></Page>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<PrintDoc />);
+
+// Auto-print once everything is ready
+(async () => {
+  try {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  } catch (e) {}
+  await new Promise(r => setTimeout(r, 1200));
+  window.print();
+})();
+</script>
+</body>
+</html>

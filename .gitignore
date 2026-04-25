@@ -1,0 +1,41 @@
+# Node / front-end
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+coverage/
+.nyc_output/
+.eslintcache
+.stylelintcache
+
+# Go / back-end (BFF)
+bin/
+*.exe
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Local Claude Code state
+.claude/settings.local.json
+
+# Docker / build artifacts
+.docker-cache/
+build/
+target/
