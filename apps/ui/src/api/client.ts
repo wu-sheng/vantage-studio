@@ -29,9 +29,37 @@ import type {
   Catalog,
   DeleteMode,
   ListEnvelope,
+  LocalState,
   RuleResponse,
   RuleSource,
+  RuleStatus,
 } from '@vantage-studio/api-client';
+
+/**
+ * BFF-only response shape for `/api/cluster/state`. Kept in sync by
+ * hand with `apps/bff/src/oap/cluster.ts` — the cluster matrix is
+ * BFF-computed, not an OAP wire type, so it doesn't belong in the
+ * api-client package.
+ */
+export interface ClusterRulePerNode {
+  status: RuleStatus | null;
+  localState: LocalState | null;
+  contentHash: string | null;
+  lastApplyError: string;
+}
+
+export interface ClusterRule {
+  catalog: Catalog;
+  name: string;
+  converged: boolean;
+  perNode: Record<string, ClusterRulePerNode>;
+}
+
+export interface ClusterStateResponse {
+  generatedAt: number;
+  nodes: { url: string; ok: boolean; error?: string }[];
+  rules: ClusterRule[];
+}
 
 export interface BffMe {
   username: string;
@@ -160,6 +188,28 @@ export class BffClient {
       withContent: String(withContent),
     });
     return this.request<BundledEntry[]>('GET', `/api/catalog/bundled?${params.toString()}`);
+  }
+
+  /** `GET /api/cluster/state` — BFF fan-out of `/runtime/rule/list`
+   *  across every configured admin URL, pivoted into a per-rule ×
+   *  per-node matrix with a `converged` boolean. */
+  async clusterState(): Promise<ClusterStateResponse> {
+    return this.request<ClusterStateResponse>('GET', '/api/cluster/state');
+  }
+
+  /** Trigger a `/api/dump[/{catalog}]` download. Uses an invisible
+   *  anchor click — the BFF's session cookie is HttpOnly and gets
+   *  sent with the same-origin request automatically. */
+  triggerDump(catalog?: Catalog): void {
+    const path = catalog
+      ? `${this.base}/api/dump/${encodeURIComponent(catalog)}`
+      : `${this.base}/api/dump`;
+    const a = document.createElement('a');
+    a.href = path;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 
   private async toError(res: Response): Promise<BffApiError> {

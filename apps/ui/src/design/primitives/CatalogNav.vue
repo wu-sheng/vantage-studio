@@ -56,18 +56,39 @@ const sections: NavSection[] = [
   },
   {
     kicker: 'cluster',
-    links: [{ label: 'Cluster status', hint: 'phase 7', disabled: true }],
+    links: [
+      {
+        label: 'Cluster status',
+        to: '/cluster',
+        active: (p) => p.startsWith('/cluster'),
+      },
+    ],
+  },
+  {
+    kicker: 'dump',
+    links: [
+      {
+        label: 'Dump & restore',
+        to: '/dump',
+        active: (p) => p.startsWith('/dump'),
+      },
+    ],
   },
   {
     kicker: 'dsl management',
-    links: [{ label: 'Dump', hint: 'phase 7', disabled: true }],
+    links: [
+      {
+        label: 'DSL Management',
+        to: '/dsl',
+        active: (p) => p.startsWith('/dsl'),
+      },
+    ],
   },
   {
     kicker: 'deferred',
     links: [
       { label: 'Live debugger', hint: 'later release', disabled: true },
       { label: 'History · diff · rollback', hint: 'later release', disabled: true },
-      { label: 'Restore', hint: 'later release', disabled: true },
       { label: 'OAL catalog', hint: 'later release', disabled: true },
     ],
   },

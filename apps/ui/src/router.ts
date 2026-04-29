@@ -42,6 +42,24 @@ const routes: RouteRecordRaw[] = [
     meta: { layout: 'main', requiresAuth: true },
   },
   {
+    path: '/cluster',
+    name: 'cluster',
+    component: () => import('./views/ClusterStatus.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
+    path: '/dump',
+    name: 'dump',
+    component: () => import('./views/Dump.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
+    path: '/dsl',
+    name: 'dsl',
+    component: () => import('./views/DslManagement.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('./views/NotFound.vue'),
