@@ -20,7 +20,11 @@ import { createRouter, createMemoryHistory } from 'vue-router';
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Catalog from '../src/views/Catalog.vue';
-import Editor from '../src/views/Editor.vue';
+
+// The real Editor.vue imports monaco-editor, which can't be resolved
+// in jsdom. The catalog tests only care that clicks land on the
+// "edit" route — a stub component is enough.
+const EditorStub = { template: '<div data-testid="editor-stub" />' };
 
 function makeRouter() {
   return createRouter({
@@ -32,7 +36,7 @@ function makeRouter() {
         component: Catalog,
         props: true,
       },
-      { path: '/edit', name: 'edit', component: Editor },
+      { path: '/edit', name: 'edit', component: EditorStub },
     ],
   });
 }
