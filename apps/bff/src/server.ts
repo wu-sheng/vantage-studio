@@ -22,11 +22,13 @@
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
+import type { FetchLike } from '@vantage-studio/api-client';
 import type { ConfigHandle } from './config/loader.js';
 import { InMemorySessionStore } from './auth/sessions.js';
 import type { AuditLogger } from './audit/logger.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import type { VerifyDeps } from './auth/local.js';
+import { registerOapRoutes } from './oap/routes.js';
 
 export interface BuildServerOptions {
   config: ConfigHandle;
@@ -37,6 +39,8 @@ export interface BuildServerOptions {
   /** Pino options forwarded to Fastify (e.g. `{ level: 'silent' }`
    *  during tests). */
   loggerOptions?: { level?: string } | boolean;
+  /** Test seam — replaces global fetch in every OAP call. */
+  oapFetch?: FetchLike;
 }
 
 export interface BuiltServer {
@@ -58,11 +62,25 @@ export async function buildServer(opts: BuildServerOptions): Promise<BuiltServer
 
   await app.register(cookie);
 
+  // The runtime-rule write path posts raw YAML; register a passthrough
+  // parser for text/plain so Fastify hands the body to the handler as
+  // a string instead of trying to JSON-parse it.
+  app.addContentTypeParser('text/plain', { parseAs: 'string' }, (_req, body, done) => {
+    done(null, body);
+  });
+
   registerAuthRoutes(app, {
     config: opts.config,
     sessions,
     audit: opts.audit,
     verifyDeps: opts.verifyDeps,
+  });
+
+  registerOapRoutes(app, {
+    config: opts.config,
+    sessions,
+    audit: opts.audit,
+    ...(opts.oapFetch !== undefined ? { fetch: opts.oapFetch } : {}),
   });
 
   app.get('/healthz', async (_req, reply) => reply.code(200).send({ ok: true }));

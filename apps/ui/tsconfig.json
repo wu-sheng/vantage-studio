@@ -6,9 +6,5 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*"],
-  "references": [
-    { "path": "../../packages/api-client" },
-    { "path": "../../packages/design-tokens" }
-  ]
+  "include": ["src/**/*"]
 }
