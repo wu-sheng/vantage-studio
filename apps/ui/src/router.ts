@@ -36,6 +36,12 @@ const routes: RouteRecordRaw[] = [
     props: true,
   },
   {
+    path: '/edit',
+    name: 'edit',
+    component: () => import('./views/Editor.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('./views/NotFound.vue'),

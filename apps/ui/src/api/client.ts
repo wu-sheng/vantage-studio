@@ -19,10 +19,11 @@
  * `HttpOnly + SameSite=Strict` so we don't manage it manually; we just
  * pass `credentials: 'include'` to keep it on every request.
  *
- * Phase-4 surface: auth-only (login / logout / me). Phase 5+ extends
- * with catalog / rule / cluster / dump methods that mirror the BFF's
- * /api/* routes.
+ * Surface grows with each phase. Auth in phase 4; catalog list in
+ * phase 5; editor + cluster + dump come later.
  */
+
+import type { Catalog, ListEnvelope } from '@vantage-studio/api-client';
 
 export interface BffMe {
   username: string;
@@ -60,6 +61,17 @@ export class BffClient {
       if (isApiError(err) && err.status === 401) return null;
       throw err;
     }
+  }
+
+  /** `GET /api/catalog/list[?catalog=]` — proxied envelope from OAP's
+   *  `/runtime/rule/list`. Each row carries enough fields for badges
+   *  (`bundled`, `bundledContentHash`, `contentHash`) so no second
+   *  call is needed for the catalog browse. */
+  async catalogList(catalog?: Catalog): Promise<ListEnvelope> {
+    const path = catalog
+      ? `/api/catalog/list?catalog=${encodeURIComponent(catalog)}`
+      : '/api/catalog/list';
+    return this.request<ListEnvelope>('GET', path);
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
