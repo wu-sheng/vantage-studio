@@ -41,7 +41,7 @@ export type RuleStatus = 'ACTIVE' | 'INACTIVE' | 'BUNDLED' | 'n/a';
 export type LocalState = 'RUNNING' | 'SUSPENDED' | 'NOT_LOADED';
 export type SuspendOrigin = 'NONE' | 'LOCAL_APPLY' | 'PEER_BROADCAST';
 export type LoaderGc = 'LIVE' | 'PENDING' | 'COLLECTED';
-export type LoaderKind = 'RUNTIME' | 'STATIC' | 'NONE';
+export type LoaderKind = 'RUNTIME' | 'BUNDLED' | 'NONE';
 
 // ── /runtime/rule/list ─────────────────────────────────────────────
 
