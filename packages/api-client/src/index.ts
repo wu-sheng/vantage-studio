@@ -14,4 +14,12 @@
  * limitations under the License.
  */
 
-export {};
+export * from './types.js';
+export {
+  RuntimeRuleClient,
+  type RuntimeRuleClientOptions,
+  type AddOrUpdateArgs,
+  type GetRuleArgs,
+  type FetchLike,
+} from './runtime-rule.js';
+export { StatusClient, type StatusClientOptions, type NormalisedClusterNode } from './status.js';

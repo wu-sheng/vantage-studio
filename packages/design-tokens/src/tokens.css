@@ -1,0 +1,80 @@
+/*
+ * Copyright 2026 The Vantage Studio Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Hand-edited alongside src/tokens.ts. The companion test
+ * (test/tokens.test.ts) verifies every key in rrDark is exposed here
+ * as a `--rr-<key>` custom property, so divergence fails CI.
+ */
+
+:root,
+[data-theme='dark'] {
+  --rr-bg: #15130f;
+  --rr-bg2: #1b1814;
+  --rr-bg3: #221e19;
+  --rr-panel: #1e1b16;
+  --rr-border: #2b2721;
+  --rr-border2: #393329;
+  --rr-dim: #6b6359;
+  --rr-ink: #d9d2c5;
+  --rr-ink2: #a8a094;
+  --rr-heading: #efeadb;
+  --rr-accent: oklch(0.82 0.14 75);
+  --rr-accentDim: oklch(0.62 0.11 75);
+  --rr-active: #f3b35a;
+  --rr-ok: #7fbf7a;
+  --rr-warn: #e5a84a;
+  --rr-err: #e87166;
+  --rr-info: #6ba3d6;
+  --rr-violet: #a990e6;
+
+  --rr-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --rr-font-ui: Inter, -apple-system, 'Segoe UI', system-ui, sans-serif;
+
+  --rr-space-0: 0;
+  --rr-space-1: 4px;
+  --rr-space-2: 8px;
+  --rr-space-3: 12px;
+  --rr-space-4: 16px;
+  --rr-space-5: 20px;
+  --rr-space-6: 24px;
+  --rr-space-8: 32px;
+  --rr-space-10: 40px;
+  --rr-space-12: 48px;
+
+  --rr-radius-sm: 3px;
+  --rr-radius-md: 4px;
+  --rr-radius-lg: 6px;
+}
+
+[data-theme='light'] {
+  --rr-bg: #f6f3ec;
+  --rr-bg2: #ecead9;
+  --rr-bg3: #e4e1d0;
+  --rr-panel: #ffffff;
+  --rr-border: #d6d1c2;
+  --rr-border2: #c2bca9;
+  --rr-dim: #8a8475;
+  --rr-ink: #2a2721;
+  --rr-ink2: #5a5548;
+  --rr-heading: #141210;
+  --rr-accent: oklch(0.58 0.14 60);
+  --rr-accentDim: oklch(0.7 0.11 60);
+  --rr-active: #b8772a;
+  --rr-ok: #3e8a48;
+  --rr-warn: #b37a15;
+  --rr-err: #c14a3e;
+  --rr-info: #2e6da6;
+  --rr-violet: #6b4bbf;
+}
