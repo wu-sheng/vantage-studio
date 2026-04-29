@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./apps/bff" },
+    { "path": "./apps/ui" },
+    { "path": "./packages/api-client" },
+    { "path": "./packages/design-tokens" }
+  ]
+}

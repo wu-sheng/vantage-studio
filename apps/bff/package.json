@@ -1,0 +1,13 @@
+{
+  "name": "@vantage-studio/bff",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vantage-studio/api-client": "workspace:*"
+  }
+}
