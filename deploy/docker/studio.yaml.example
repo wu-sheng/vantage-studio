@@ -1,0 +1,65 @@
+# Vantage Studio configuration. Hot-reloaded — invalid edits keep the
+# previous valid config in place.
+#
+# This example ships with one admin user (password: "vantage-changeme")
+# and RBAC turned off. **Replace the password before exposing this
+# instance to anyone.** Generate a fresh argon2id hash with:
+#
+#     pnpm -F @vantage-studio/bff vsadmin:hash <new-password>
+#
+# or, inside the container:
+#
+#     docker exec studio /nodejs/bin/node /app/server.js --hash <pw>
+#
+# (The vsadmin entrypoint will be wired into the image in a follow-up
+# polish pass; for now generate the hash from your dev workspace.)
+
+server:
+  listen: 0.0.0.0:8080
+
+oap:
+  # Comma-separated when running multiple OAP nodes; the BFF fan-outs
+  # /list across every URL when computing the cluster matrix.
+  adminUrls:
+    - http://oap:17128
+  statusUrl: http://oap:12800
+
+auth:
+  backend: local
+  local:
+    users:
+      - username: admin
+        # password is "vantage-changeme" — REPLACE THIS
+        passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$ngt3kVvHFvEVPyt4MVVhLw$kuSwMfm4CnCV3tscMi7W41dX3LiUV5RhBEIrxVgSInE'
+        roles: [admin]
+
+# Optional. Uncomment to enable RBAC.
+# rbac:
+#   enabled: true
+#   roles:
+#     admin:
+#       verbs: ['*']
+#     operator:
+#       verbs:
+#         - rule:read
+#         - rule:write
+#         - rule:write:structural
+#         - rule:delete
+#         - cluster:read
+#     viewer:
+#       verbs:
+#         - rule:read
+#         - cluster:read
+#   # Note: per-user role assignment is not in v1; v1 reads roles from
+#   # `auth.local.users[].roles`. The `rbac.roles` block defines what
+#   # each role grants.
+
+session:
+  ttlMinutes: 60
+  cookieName: sid
+  # Set true behind HTTPS. The dev compose stack runs HTTP-only so we
+  # leave this false to keep cookies attached.
+  cookieSecure: false
+
+audit:
+  file: /data/audit.jsonl

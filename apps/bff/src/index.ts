@@ -23,13 +23,38 @@
  * only invoked by the production process.
  */
 
+import { copyFile, mkdir, stat } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { loadConfig } from './config/loader.js';
 import { createAuditLogger } from './audit/logger.js';
 import { InMemorySessionStore } from './auth/sessions.js';
 import { buildServer } from './server.js';
 
+/** First-run seed: when STUDIO_CONFIG points at a path that doesn't
+ *  yet exist and STUDIO_CONFIG_EXAMPLE points at a baked-in defaults
+ *  file, copy the example into place. Lets the Docker image come up
+ *  on a fresh volume without an operator's hand-written studio.yaml. */
+async function ensureConfig(targetPath: string): Promise<void> {
+  try {
+    await stat(targetPath);
+    return; // exists
+  } catch {
+    // not present — fall through to seed
+  }
+  const example = process.env.STUDIO_CONFIG_EXAMPLE;
+  if (!example) {
+    throw new Error(`studio config missing at ${targetPath} and STUDIO_CONFIG_EXAMPLE is not set`);
+  }
+  await mkdir(dirname(targetPath), { recursive: true });
+  await copyFile(example, targetPath);
+  console.warn(
+    `[vantage-studio] no config at ${targetPath}; seeded from ${example}. Edit it before exposing this instance.`,
+  );
+}
+
 async function main(): Promise<void> {
   const configPath = process.env.STUDIO_CONFIG ?? '/etc/studio/studio.yaml';
+  await ensureConfig(configPath);
 
   const config = await loadConfig(configPath, {
     log: {
@@ -43,7 +68,13 @@ async function main(): Promise<void> {
   const audit = await createAuditLogger({ file: cfg.audit.file });
   const sessions = new InMemorySessionStore();
 
-  const { app } = await buildServer({ config, sessions, audit });
+  const uiDir = process.env.STUDIO_UI_DIR;
+  const { app } = await buildServer({
+    config,
+    sessions,
+    audit,
+    ...(uiDir !== undefined ? { uiDir } : {}),
+  });
 
   const reaper = setInterval(() => sessions.reapExpired(), 60_000);
 

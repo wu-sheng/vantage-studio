@@ -20,8 +20,10 @@
  * dependencies (a static config, an in-memory audit logger, etc.).
  */
 
+import { existsSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
+import staticPlugin from '@fastify/static';
 import type { FetchLike } from '@vantage-studio/api-client';
 import type { ConfigHandle } from './config/loader.js';
 import { InMemorySessionStore } from './auth/sessions.js';
@@ -41,6 +43,11 @@ export interface BuildServerOptions {
   loggerOptions?: { level?: string } | boolean;
   /** Test seam — replaces global fetch in every OAP call. */
   oapFetch?: FetchLike;
+  /** Absolute path to the built SPA's `dist/` directory. When set
+   *  (production), the BFF serves it under `/` with a SPA-fallback
+   *  to `index.html` for unknown non-`/api/*` paths. Unset (dev),
+   *  Vite serves the SPA on its own port + proxies `/api/*` here. */
+  uiDir?: string;
 }
 
 export interface BuiltServer {
@@ -85,6 +92,25 @@ export async function buildServer(opts: BuildServerOptions): Promise<BuiltServer
 
   app.get('/healthz', async (_req, reply) => reply.code(200).send({ ok: true }));
   app.get('/readyz', async (_req, reply) => reply.code(200).send({ ok: true }));
+
+  if (opts.uiDir && existsSync(opts.uiDir)) {
+    await app.register(staticPlugin, {
+      root: opts.uiDir,
+      prefix: '/',
+      // Disable wildcard so /api/* and the health probes match first.
+      wildcard: false,
+    });
+    // SPA fallback: any non-/api/* path that didn't match a static
+    // file gets index.html so vue-router's history mode works on
+    // page reload.
+    app.setNotFoundHandler((req, reply) => {
+      const url = req.url;
+      if (url.startsWith('/api/') || url === '/healthz' || url === '/readyz') {
+        return reply.code(404).send({ error: 'not_found' });
+      }
+      return reply.sendFile('index.html');
+    });
+  }
 
   return { app, sessions };
 }
