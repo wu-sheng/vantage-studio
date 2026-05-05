@@ -32,9 +32,11 @@ import type {
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
+import { useRuleSource } from '../../composables/useRuleSource.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
+import DebugSourcePane from './DebugSourcePane.vue';
 import {
   isMalMeterPayload,
   isMalRecord,
@@ -42,6 +44,7 @@ import {
   shortHash,
   stageTone,
 } from './payload.js';
+import { findLineMatches } from './sourceMatch.js';
 
 interface RuleOption {
   catalog: Catalog;
@@ -135,6 +138,48 @@ const nodeViews = computed<MalNodeView[]>(() => {
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
 }
+
+// ── Source pane plumbing ────────────────────────────────────────────
+
+const hoveredRow = ref<MalRow | null>(null);
+
+/** When a session is active, drive the source pane off the rule the
+ *  session bound to (selectedRule won't change post-start). */
+const sourceCatalog = computed<Catalog | null>(() =>
+  dbg.session.value === null ? null : selectedRule.value?.catalog ?? null,
+);
+const sourceName = computed<string | null>(() =>
+  dbg.session.value === null ? null : selectedRule.value?.name ?? null,
+);
+const { source: ruleSource, query: sourceQuery } = useRuleSource({
+  catalog: sourceCatalog,
+  name: sourceName,
+});
+
+/** SHA-256 of the most recent captured record (any node) — drives the
+ *  stale-source banner if a hot-update fires mid-session. */
+const pageHash = computed<string | null>(() => {
+  const s = dbg.session.value;
+  if (!s) return null;
+  for (let i = s.nodes.length - 1; i >= 0; i--) {
+    const recs = s.nodes[i]!.records;
+    if (recs && recs.length > 0) {
+      return recs[recs.length - 1]!.contentHash || null;
+    }
+  }
+  return null;
+});
+
+const highlightedLines = computed<readonly number[]>(() => {
+  const row = hoveredRow.value;
+  const src = ruleSource.value;
+  if (!row || !src) return [];
+  return findLineMatches(src.content, row.rec.sourceText);
+});
+
+function refetchSource(): void {
+  void sourceQuery.refetch();
+}
 </script>
 
 <template>
@@ -163,7 +208,20 @@ function nodeKey(n: NodeSlice): string {
 
     <template #idle-hint>
       pick a rule and hit start. each session captures one rule's pipeline
-      stages on every cluster node simultaneously.
+      stages on every cluster node simultaneously. the source pane on the
+      right will load the rule body when you hit start; hover a row to
+      highlight the matching DSL fragment.
+    </template>
+
+    <template #source-pane>
+      <DebugSourcePane
+        :source="ruleSource"
+        :loading="sourceQuery.isPending.value"
+        :error="sourceQuery.error.value === null ? null : String(sourceQuery.error.value)"
+        :highlighted-lines="highlightedLines"
+        :page-hash="pageHash"
+        @refetch="refetchSource"
+      />
     </template>
 
     <template #node-body="{ node }">
@@ -180,7 +238,14 @@ function nodeKey(n: NodeSlice): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, idx) in node.rows" :key="`${nodeKey(node)}-${idx}`">
+          <tr
+            v-for="(row, idx) in node.rows"
+            :key="`${nodeKey(node)}-${idx}`"
+            class="mal__row"
+            :class="{ 'mal__row--hovered': hoveredRow === row }"
+            @mouseenter="hoveredRow = row"
+            @mouseleave="hoveredRow = null"
+          >
             <td class="mal__source">
               <code>{{ row.rec.sourceText }}</code>
             </td>
@@ -285,6 +350,15 @@ function nodeKey(n: NodeSlice): string {
   padding: 6px 8px;
   vertical-align: top;
   border-bottom: 1px solid var(--rr-border);
+}
+
+.mal__row {
+  cursor: pointer;
+  transition: background-color 80ms;
+}
+
+.mal__row--hovered {
+  background: var(--rr-bg3);
 }
 
 .mal__source {

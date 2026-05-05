@@ -31,9 +31,11 @@ import type {
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
+import { useRuleSource } from '../../composables/useRuleSource.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
+import DebugSourcePane from './DebugSourcePane.vue';
 import {
   isLalBlockPayload,
   isLalLinePayload,
@@ -41,6 +43,7 @@ import {
   shortHash,
   stageTone,
 } from './payload.js';
+import { findLineMatches } from './sourceMatch.js';
 
 const dbg = useDebugSession('lal');
 const selectedRule = ref<string>('');
@@ -129,6 +132,59 @@ const nodeViews = computed<LalNodeView[]>(() => {
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
 }
+
+// ── Source pane plumbing ────────────────────────────────────────────
+
+const hoveredRow = ref<LalRow | null>(null);
+
+/** Drive the pane off `selectedRule` (the picked LAL rule). For
+ *  runtime-rule-applied LAL the upstream binds the rule under the
+ *  rule name in the runtime-rule list, so we use that as `name`. */
+const sourceCatalog = computed<'lal' | null>(() =>
+  dbg.session.value === null || !selectedRule.value ? null : 'lal',
+);
+const sourceName = computed<string | null>(() =>
+  dbg.session.value === null ? null : selectedRule.value || null,
+);
+const { source: ruleSource, query: sourceQuery } = useRuleSource({
+  catalog: sourceCatalog,
+  name: sourceName,
+});
+
+const pageHash = computed<string | null>(() => {
+  const s = dbg.session.value;
+  if (!s) return null;
+  for (let i = s.nodes.length - 1; i >= 0; i--) {
+    const recs = s.nodes[i]!.records;
+    if (recs && recs.length > 0) {
+      return recs[recs.length - 1]!.contentHash || null;
+    }
+  }
+  return null;
+});
+
+/** LAL highlights:
+ *  - `line` stage records: exact match via `row.sourceLine`.
+ *  - block stages: pseudo-fragments (`raw`/`parsed`/`fields`/output
+ *    class) don't appear in the source as-is; skip highlighting.
+ */
+const highlightedLines = computed<readonly number[]>(() => {
+  const row = hoveredRow.value;
+  const src = ruleSource.value;
+  if (!row || !src) return [];
+  if (row.sourceLine !== null) return [row.sourceLine];
+  // `outputRecord` extras carry the typed-output class name (e.g.
+  // `LogBuilder`); search for it in the body so the operator can see
+  // which YAML key configures the output.
+  if (row.body?.extra?.outputClass) {
+    return findLineMatches(src.content, row.body.extra.outputClass);
+  }
+  return [];
+});
+
+function refetchSource(): void {
+  void sourceQuery.refetch();
+}
 </script>
 
 <template>
@@ -179,7 +235,20 @@ function nodeKey(n: NodeSlice): string {
       hit start. each captured log record fills one row per probed stage —
       the upstream emits text → parser → extractor → outputRecord /
       outputMetric for kept records. Statement granularity adds one
-      <code>line</code> row per DSL statement.
+      <code>line</code> row per DSL statement. the source pane on the
+      right loads the rule body when you hit start; hover a row to
+      highlight the matching DSL line.
+    </template>
+
+    <template #source-pane>
+      <DebugSourcePane
+        :source="ruleSource"
+        :loading="sourceQuery.isPending.value"
+        :error="sourceQuery.error.value === null ? null : String(sourceQuery.error.value)"
+        :highlighted-lines="highlightedLines"
+        :page-hash="pageHash"
+        @refetch="refetchSource"
+      />
     </template>
 
     <template #node-body="{ node }">
@@ -198,7 +267,14 @@ function nodeKey(n: NodeSlice): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, idx) in node.rows" :key="`${nodeKey(node)}-${idx}`">
+          <tr
+            v-for="(row, idx) in node.rows"
+            :key="`${nodeKey(node)}-${idx}`"
+            class="lal__row"
+            :class="{ 'lal__row--hovered': hoveredRow === row }"
+            @mouseenter="hoveredRow = row"
+            @mouseleave="hoveredRow = null"
+          >
             <td class="lal__line">{{ row.sourceLine ?? '—' }}</td>
             <td class="lal__source"><code>{{ row.rec.sourceText }}</code></td>
             <td class="lal__kind">
@@ -316,6 +392,15 @@ function nodeKey(n: NodeSlice): string {
   text-align: left;
   border-bottom: 1px solid var(--rr-border);
   vertical-align: top;
+}
+
+.lal__row {
+  cursor: pointer;
+  transition: background-color 80ms;
+}
+
+.lal__row--hovered {
+  background: var(--rr-bg3);
 }
 
 .lal__waterfall th {

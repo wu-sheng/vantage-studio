@@ -173,6 +173,24 @@ function nodeKey(n: NodeSlice): string {
       — and every metric routed off this source captures together.
     </template>
 
+    <template #source-pane>
+      <aside class="oal__sourcefallback">
+        <header class="oal__sourcefallback-h">source</header>
+        <p>
+          OAL sources can appear across multiple <code>.oal</code> files;
+          the upstream listing doesn't surface a source-to-file mapping
+          yet. Open the
+          <router-link to="/oal" class="oal__sourcefallback-link">OAL catalog</router-link>
+          to browse the loaded files alongside this debug session.
+        </p>
+        <p v-if="selectedDetail" class="oal__sourcefallback-hint">
+          inspecting <code>{{ selectedDetail.source }}</code> ·
+          {{ selectedDetail.metrics.length }} metric{{ selectedDetail.metrics.length === 1 ? '' : 's' }}
+          routed off this source.
+        </p>
+      </aside>
+    </template>
+
     <template #node-body="{ node }">
       <div v-if="node.groups.length === 0" class="oal__empty">
         no source rows captured on this node
@@ -405,5 +423,46 @@ function nodeKey(n: NodeSlice): string {
   font-family: var(--rr-font-mono);
   font-size: 11px;
   color: var(--rr-dim);
+}
+
+.oal__sourcefallback {
+  display: flex;
+  flex-direction: column;
+  background: var(--rr-bg2);
+  border: 1px solid var(--rr-border);
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--rr-ink2);
+  flex: 1 1 auto;
+}
+
+.oal__sourcefallback-h {
+  font-family: var(--rr-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+  margin-bottom: 8px;
+}
+
+.oal__sourcefallback p {
+  margin: 0 0 8px;
+}
+
+.oal__sourcefallback code {
+  font-family: var(--rr-font-mono);
+  background: var(--rr-bg);
+  padding: 1px 4px;
+  color: var(--rr-ink);
+}
+
+.oal__sourcefallback-link {
+  color: var(--rr-active);
+  text-decoration: underline;
+}
+
+.oal__sourcefallback-hint {
+  color: var(--rr-dim);
+  font-style: italic;
 }
 </style>

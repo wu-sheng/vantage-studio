@@ -42,7 +42,7 @@ import type {
   PriorCleanupOutcome,
   SessionResponse,
 } from '@vantage-studio/api-client';
-import type { Ref } from 'vue';
+import { computed, type Ref } from 'vue';
 import Pill from '../../design/primitives/Pill.vue';
 import NodeCoverage from './NodeCoverage.vue';
 
@@ -64,13 +64,19 @@ defineProps<{
   nodeViews: N[];
 }>();
 
-defineSlots<{
+const slots = defineSlots<{
   controls(): unknown;
   subhead(): unknown;
   'idle-hint'(): unknown;
   empty(props: { node: N }): unknown;
   'node-body'(props: { node: N }): unknown;
+  /** Optional source-pane sidecar — when supplied, the capture
+   *  section becomes a two-column grid with node cards on the left
+   *  and the source pane on the right. */
+  'source-pane'(): unknown;
 }>();
+
+const hasSourcePane = computed(() => slots['source-pane'] !== undefined);
 
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
@@ -126,19 +132,26 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
         <span class="dv__sid2">session {{ dbg.session.value.sessionId }}</span>
       </header>
 
-      <div v-for="node in nodeViews" :key="nodeKey(node)" class="dv__node">
-        <header class="dv__nodeh">
-          <span class="dv__nodeid">{{ nodeKey(node) }}</span>
-          <Pill :tone="nodeStatusTone(node.status)">{{ node.status }}</Pill>
-          <span v-if="node.totalBytes !== undefined" class="dv__bytes">
-            {{ node.totalBytes }} bytes
-          </span>
-        </header>
-        <slot name="node-body" :node="node">
-          <slot name="empty" :node="node">
-            <div class="dv__nodeempty">no records from this node</div>
-          </slot>
-        </slot>
+      <div class="dv__split" :class="{ 'dv__split--withpane': hasSourcePane }">
+        <div class="dv__nodes">
+          <div v-for="node in nodeViews" :key="nodeKey(node)" class="dv__node">
+            <header class="dv__nodeh">
+              <span class="dv__nodeid">{{ nodeKey(node) }}</span>
+              <Pill :tone="nodeStatusTone(node.status)">{{ node.status }}</Pill>
+              <span v-if="node.totalBytes !== undefined" class="dv__bytes">
+                {{ node.totalBytes }} bytes
+              </span>
+            </header>
+            <slot name="node-body" :node="node">
+              <slot name="empty" :node="node">
+                <div class="dv__nodeempty">no records from this node</div>
+              </slot>
+            </slot>
+          </div>
+        </div>
+        <div v-if="hasSourcePane" class="dv__sourcepane">
+          <slot name="source-pane" />
+        </div>
       </div>
     </section>
 
@@ -209,6 +222,43 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
   font-family: var(--rr-font-mono);
   color: var(--rr-heading);
   font-size: 12px;
+}
+
+.dv__split {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dv__split--withpane {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  /* Bound the pane height so the source body scrolls inside the
+     pane rather than growing the whole page. */
+  max-height: calc(100vh - 240px);
+  min-height: 300px;
+}
+
+.dv__split--withpane .dv__nodes {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.dv__split--withpane .dv__sourcepane {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.dv__nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .dv__node {
