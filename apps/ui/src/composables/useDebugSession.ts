@@ -34,7 +34,7 @@
  * Polling cadence: 1 s while `capturing`, then halts on terminal.
  */
 
-import { computed, onScopeDispose, ref, type Ref } from 'vue';
+import { computed, onScopeDispose, ref, shallowRef, type Ref } from 'vue';
 import type {
   PeerInstallAck,
   PriorCleanupOutcome,
@@ -76,6 +76,13 @@ export interface UseDebugSessionResult {
 }
 
 const POLL_INTERVAL_MS = 1000;
+/** Pause polling when the tab is hidden — operator can't see captures
+ *  anyway, no reason to keep load on the BFF + OAP. The first
+ *  visibilitychange on resume snaps an immediate poll. */
+const PAUSE_ON_HIDDEN = true;
+/** Tolerate brief OAP / network blips before declaring an error.
+ *  Each retry waits POLL_INTERVAL_MS × (attempt + 1) ms. */
+const POLL_RETRY_BUDGET = 2;
 
 /** Decide the UI-facing state from a polled SessionResponse. */
 function deriveState(resp: SessionResponse): 'capturing' | 'captured' {
@@ -96,7 +103,11 @@ function deriveState(resp: SessionResponse): 'capturing' | 'captured' {
 export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
   const clientId = getClientId(widget);
   const state = ref<DebugState>('idle');
-  const session = ref<SessionResponse | null>(null);
+  // shallowRef: the session response is replaced wholesale per poll
+  // and never mutated in place. Deep reactivity over a 1000-record
+  // payload would walk every leaf on every poll for no benefit —
+  // shallowRef notifies dependents on assignment only.
+  const session = shallowRef<SessionResponse | null>(null);
   const sessionId = ref<string | null>(null);
   const error = ref<string | null>(null);
   const peerAcks = ref<PeerInstallAck[]>([]);
@@ -112,6 +123,12 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let pollGeneration = 0;
+  /** Consecutive failures since the last successful poll. Resets on
+   *  every successful response. */
+  let pollFailures = 0;
+  /** True when polling is on hold because `document.hidden` is true.
+   *  An immediate poll fires when the tab becomes visible again. */
+  let pausedForHidden = false;
 
   function clearTimer(): void {
     if (pollTimer !== null) {
@@ -120,12 +137,16 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     }
   }
 
-  function schedulePoll(): void {
+  function schedulePoll(delay: number = POLL_INTERVAL_MS): void {
     clearTimer();
+    if (PAUSE_ON_HIDDEN && typeof document !== 'undefined' && document.hidden) {
+      pausedForHidden = true;
+      return;
+    }
     const gen = pollGeneration;
     pollTimer = setTimeout(() => {
       void poll(gen);
-    }, POLL_INTERVAL_MS);
+    }, delay);
   }
 
   async function poll(gen: number): Promise<void> {
@@ -135,6 +156,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     try {
       const got = await bff.debugSession(id);
       if (gen !== pollGeneration) return;
+      pollFailures = 0;
       if (got === null) {
         // Session went past retention; freeze whatever we last saw and
         // surface as captured (we kept the last poll's records).
@@ -148,7 +170,15 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
       if (next === 'capturing') schedulePoll();
       else clearTimer();
     } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err);
+      if (gen !== pollGeneration) return;
+      pollFailures += 1;
+      if (pollFailures <= POLL_RETRY_BUDGET) {
+        // Exponential-ish backoff while the blip clears. Don't surface
+        // the error in the UI — operator sees uninterrupted capturing.
+        schedulePoll(POLL_INTERVAL_MS * (pollFailures + 1));
+        return;
+      }
+      error.value = err instanceof Error ? err.message : describeError(err);
       state.value = 'error';
       clearTimer();
     }
@@ -157,6 +187,8 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
   async function start(args: Omit<StartSessionArgs, 'clientId'>): Promise<void> {
     pollGeneration += 1;
     clearTimer();
+    pollFailures = 0;
+    pausedForHidden = false;
     state.value = 'starting';
     error.value = null;
     session.value = null;
@@ -203,9 +235,29 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     }
   }
 
+  function onVisibilityChange(): void {
+    if (typeof document === 'undefined') return;
+    if (document.hidden) {
+      // Going hidden — clear the timer; the next schedulePoll will
+      // park itself in pausedForHidden until we come back.
+      clearTimer();
+    } else if (pausedForHidden && state.value === 'capturing') {
+      // Resume: snap an immediate poll so the operator sees fresh
+      // data on tab focus.
+      pausedForHidden = false;
+      void poll(pollGeneration);
+    }
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
   onScopeDispose(() => {
     pollGeneration += 1;
     clearTimer();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
   });
 
   return {

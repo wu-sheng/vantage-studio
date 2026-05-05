@@ -85,54 +85,50 @@ async function startSampling(): Promise<void> {
   });
 }
 
-interface OalNodeView extends NodeSlice {
-  oalRecords: SessionRecord[];
+interface OalRow {
+  rec: SessionRecord;
+  source: OalSourcePayload | null;
+  metrics: OalMetricsPayload | null;
 }
 
+interface OalRecordGroup {
+  index: number;
+  rows: OalRow[];
+}
+
+interface OalNodeView extends NodeSlice {
+  groups: OalRecordGroup[];
+}
+
+/** Pre-shape and group in one pass per poll. Source rows delineate
+ *  groups (each `source` record starts a new pipeline); within each
+ *  group every record gets its payload pre-narrowed for the
+ *  template. */
 const nodeViews = computed<OalNodeView[]>(() => {
   const s = dbg.session.value;
   if (!s) return [];
-  return s.nodes.map((n) => ({
-    ...n,
-    oalRecords: (n.records ?? []).filter(isOalRecord),
-  }));
-});
-
-interface RecordGroup {
-  index: number;
-  records: SessionRecord[];
-}
-
-/** Group consecutive records by `source` boundary so each Source row's
- *  full pipeline renders as one block. The recorder emits stages in
- *  pipeline order — we delineate at every `source` record. */
-function groupBySource(records: SessionRecord[]): RecordGroup[] {
-  const groups: RecordGroup[] = [];
-  let cur: RecordGroup | null = null;
-  let n = 0;
-  for (const r of records) {
-    if (r.stage === 'source') {
-      n += 1;
-      cur = { index: n, records: [r] };
-      groups.push(cur);
-    } else if (cur) {
-      cur.records.push(r);
-    } else {
-      n += 1;
-      cur = { index: n, records: [r] };
-      groups.push(cur);
+  return s.nodes.map((n) => {
+    const groups: OalRecordGroup[] = [];
+    let cur: OalRecordGroup | null = null;
+    let idx = 0;
+    for (const rec of n.records ?? []) {
+      if (!isOalRecord(rec)) continue;
+      const row: OalRow = {
+        rec,
+        source: isOalSourcePayload(rec.payload) ? rec.payload : null,
+        metrics: isOalMetricsPayload(rec.payload) ? rec.payload : null,
+      };
+      if (rec.stage === 'source' || cur === null) {
+        idx += 1;
+        cur = { index: idx, rows: [row] };
+        groups.push(cur);
+      } else {
+        cur.rows.push(row);
+      }
     }
-  }
-  return groups;
-}
-
-function asSource(rec: SessionRecord): OalSourcePayload | null {
-  return isOalSourcePayload(rec.payload) ? rec.payload : null;
-}
-
-function asMetrics(rec: SessionRecord): OalMetricsPayload | null {
-  return isOalMetricsPayload(rec.payload) ? rec.payload : null;
-}
+    return { ...n, groups };
+  });
+});
 
 function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   switch (stage) {
@@ -224,13 +220,13 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
           </span>
         </header>
 
-        <div v-if="node.oalRecords.length === 0" class="oal__nodeempty">
+        <div v-if="node.groups.length === 0" class="oal__nodeempty">
           no source rows captured on this node
         </div>
 
         <div v-else class="oal__groups">
           <article
-            v-for="g in groupBySource(node.oalRecords)"
+            v-for="g in node.groups"
             :key="g.index"
             class="oal__group"
           >
@@ -247,33 +243,33 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(rec, idx) in g.records" :key="`${rec.stage}-${idx}-${rec.capturedAt}`">
-                  <td class="oal__source"><code>{{ rec.sourceText }}</code></td>
+                <tr v-for="(row, idx) in g.rows" :key="`${node.nodeId ?? node.peer ?? '?'}-${g.index}-${idx}`">
+                  <td class="oal__source"><code>{{ row.rec.sourceText }}</code></td>
                   <td class="oal__kind">
-                    <Pill :tone="stageTone(rec.stage)">{{ rec.stage }}</Pill>
+                    <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
                   </td>
                   <td class="oal__result">
-                    <template v-if="asSource(rec)">
-                      <div><span class="oal__lbl">type</span> {{ asSource(rec)!.type }}</div>
-                      <div v-if="asSource(rec)!.scope !== undefined">
-                        <span class="oal__lbl">scope</span> {{ asSource(rec)!.scope }}
+                    <template v-if="row.source">
+                      <div><span class="oal__lbl">type</span> {{ row.source.type }}</div>
+                      <div v-if="row.source.scope !== undefined">
+                        <span class="oal__lbl">scope</span> {{ row.source.scope }}
                       </div>
-                      <div v-if="asSource(rec)!.extra?.kept !== undefined">
+                      <div v-if="row.source.extra?.kept !== undefined">
                         <span class="oal__lbl">kept</span>
-                        <Pill :tone="asSource(rec)!.extra!.kept ? 'ok' : 'warn'">
-                          {{ asSource(rec)!.extra!.kept }}
+                        <Pill :tone="row.source.extra.kept ? 'ok' : 'warn'">
+                          {{ row.source.extra.kept }}
                         </Pill>
                       </div>
                     </template>
-                    <template v-else-if="asMetrics(rec)">
-                      <div><span class="oal__lbl">type</span> {{ asMetrics(rec)!.type }}</div>
+                    <template v-else-if="row.metrics">
+                      <div><span class="oal__lbl">type</span> {{ row.metrics.type }}</div>
                       <div>
-                        <span class="oal__lbl">timeBucket</span> {{ asMetrics(rec)!.timeBucket }}
+                        <span class="oal__lbl">timeBucket</span> {{ row.metrics.timeBucket }}
                       </div>
                     </template>
                   </td>
                   <td class="oal__hash">
-                    <code>{{ shortHash(rec.contentHash) }}</code>
+                    <code>{{ shortHash(row.rec.contentHash) }}</code>
                   </td>
                 </tr>
               </tbody>

@@ -106,22 +106,27 @@ async function startSampling(): Promise<void> {
   });
 }
 
+interface LalRow {
+  rec: SessionRecord;
+  payload: LalPayload | null;
+}
+
 interface LalNodeView extends NodeSlice {
-  lalRecords: SessionRecord[];
+  rows: LalRow[];
 }
 
 const nodeViews = computed<LalNodeView[]>(() => {
   const s = dbg.session.value;
   if (!s) return [];
-  return s.nodes.map((n) => ({
-    ...n,
-    lalRecords: (n.records ?? []).filter(isLalRecord),
-  }));
+  return s.nodes.map((n) => {
+    const rows: LalRow[] = [];
+    for (const rec of n.records ?? []) {
+      if (!isLalRecord(rec)) continue;
+      rows.push({ rec, payload: isLalPayload(rec.payload) ? rec.payload : null });
+    }
+    return { ...n, rows };
+  });
 });
-
-function asLal(rec: SessionRecord): LalPayload | null {
-  return isLalPayload(rec.payload) ? rec.payload : null;
-}
 
 function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   switch (stage) {
@@ -217,7 +222,7 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
           </span>
         </header>
 
-        <div v-if="node.lalRecords.length === 0" class="lal__nodeempty">
+        <div v-if="node.rows.length === 0" class="lal__nodeempty">
           no LAL records from this node
         </div>
 
@@ -233,35 +238,35 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(rec, idx) in node.lalRecords" :key="`${rec.stage}-${idx}-${rec.capturedAt}`">
-              <td class="lal__line">{{ asLal(rec)?.sourceLine ?? '—' }}</td>
-              <td class="lal__source"><code>{{ rec.sourceText }}</code></td>
+            <tr v-for="(row, idx) in node.rows" :key="`${node.nodeId ?? node.peer ?? '?'}-${idx}`">
+              <td class="lal__line">{{ row.payload?.sourceLine ?? '—' }}</td>
+              <td class="lal__source"><code>{{ row.rec.sourceText }}</code></td>
               <td class="lal__kind">
-                <Pill :tone="stageTone(rec.stage)">{{ rec.stage }}</Pill>
+                <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
               </td>
               <td class="lal__result">
-                <template v-if="asLal(rec)">
+                <template v-if="row.payload">
                   <div class="lal__flags">
-                    <span v-if="asLal(rec)!.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
-                    <span v-if="asLal(rec)!.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
-                    <span v-if="asLal(rec)!.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
+                    <span v-if="row.payload.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
+                    <span v-if="row.payload.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
+                    <span v-if="row.payload.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
                   </div>
                 </template>
               </td>
               <td class="lal__extra">
-                <template v-if="asLal(rec)?.body.extra">
-                  <div v-if="asLal(rec)!.body.extra!.outputClass" class="lal__extraitem">
+                <template v-if="row.payload?.body.extra">
+                  <div v-if="row.payload.body.extra.outputClass" class="lal__extraitem">
                     <span class="lal__lbl">class</span>
-                    <code>{{ asLal(rec)!.body.extra!.outputClass }}</code>
+                    <code>{{ row.payload.body.extra.outputClass }}</code>
                   </div>
-                  <div v-if="asLal(rec)!.body.extra!.samples !== undefined" class="lal__extraitem">
+                  <div v-if="row.payload.body.extra.samples !== undefined" class="lal__extraitem">
                     <span class="lal__lbl">samples</span>
-                    {{ asLal(rec)!.body.extra!.samples }}
+                    {{ row.payload.body.extra.samples }}
                   </div>
                 </template>
               </td>
               <td class="lal__hash">
-                <code>{{ shortHash(rec.contentHash) }}</code>
+                <code>{{ shortHash(row.rec.contentHash) }}</code>
               </td>
             </tr>
           </tbody>

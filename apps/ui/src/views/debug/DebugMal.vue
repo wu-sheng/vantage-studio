@@ -103,17 +103,39 @@ async function startSampling(): Promise<void> {
   });
 }
 
+/**
+ * Pre-narrowed MAL row — one of these is computed per record once per
+ * poll, so the template reads `row.samples` / `row.meter` directly
+ * instead of calling type-narrowing helpers 5+ times per cell.
+ *
+ * At recordCap = 1000 this cuts the active-path render from ~5000
+ * helper calls to 1000 once-only narrowings.
+ */
+interface MalRow {
+  rec: SessionRecord;
+  samples: MalSamplesPayload | null;
+  meter: MalMeterPayload | null;
+}
+
 interface MalNodeView extends NodeSlice {
-  malRecords: SessionRecord[];
+  rows: MalRow[];
 }
 
 const nodeViews = computed<MalNodeView[]>(() => {
   const s = dbg.session.value;
   if (!s) return [];
-  return s.nodes.map((n) => ({
-    ...n,
-    malRecords: (n.records ?? []).filter(isMalRecord),
-  }));
+  return s.nodes.map((n) => {
+    const rows: MalRow[] = [];
+    for (const rec of n.records ?? []) {
+      if (!isMalRecord(rec)) continue;
+      rows.push({
+        rec,
+        samples: isMalSamplesPayload(rec.payload) ? rec.payload : null,
+        meter: isMalMeterPayload(rec.payload) ? rec.payload : null,
+      });
+    }
+    return { ...n, rows };
+  });
 });
 
 function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
@@ -129,14 +151,6 @@ function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim
     default:
       return 'dim';
   }
-}
-
-function asSamples(rec: SessionRecord): MalSamplesPayload | null {
-  return isMalSamplesPayload(rec.payload) ? rec.payload : null;
-}
-
-function asMeter(rec: SessionRecord): MalMeterPayload | null {
-  return isMalMeterPayload(rec.payload) ? rec.payload : null;
 }
 </script>
 
@@ -195,7 +209,7 @@ function asMeter(rec: SessionRecord): MalMeterPayload | null {
           </span>
         </header>
 
-        <div v-if="node.malRecords.length === 0" class="mal__nodeempty">
+        <div v-if="node.rows.length === 0" class="mal__nodeempty">
           no MAL records from this node
         </div>
 
@@ -209,42 +223,42 @@ function asMeter(rec: SessionRecord): MalMeterPayload | null {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(rec, idx) in node.malRecords" :key="`${rec.stage}-${idx}-${rec.capturedAt}`">
+            <tr v-for="(row, idx) in node.rows" :key="`${node.nodeId ?? node.peer ?? '?'}-${idx}`">
               <td class="mal__source">
-                <code>{{ rec.sourceText }}</code>
+                <code>{{ row.rec.sourceText }}</code>
               </td>
               <td class="mal__kind">
-                <Pill :tone="stageTone(rec.stage)">{{ rec.stage }}</Pill>
+                <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
               </td>
               <td class="mal__result">
-                <template v-if="asSamples(rec)">
+                <template v-if="row.samples">
                   <div class="mal__counts">
-                    <span v-if="asSamples(rec)!.empty">empty family</span>
-                    <span v-else>samples · {{ asSamples(rec)!.samples ?? 0 }}</span>
-                    <span v-if="asSamples(rec)!.extra?.kept !== undefined">
-                      kept · {{ asSamples(rec)!.extra!.kept }}
+                    <span v-if="row.samples.empty">empty family</span>
+                    <span v-else>samples · {{ row.samples.samples ?? 0 }}</span>
+                    <span v-if="row.samples.extra?.kept !== undefined">
+                      kept · {{ row.samples.extra.kept }}
                     </span>
-                    <span v-if="asSamples(rec)!.extra?.entities !== undefined">
-                      entities · {{ asSamples(rec)!.extra!.entities }}
+                    <span v-if="row.samples.extra?.entities !== undefined">
+                      entities · {{ row.samples.extra.entities }}
                     </span>
                   </div>
                 </template>
-                <template v-else-if="asMeter(rec)">
+                <template v-else-if="row.meter">
                   <div class="mal__meter">
-                    <div><span class="mal__lbl">metric</span> {{ asMeter(rec)!.metric }}</div>
-                    <div v-if="asMeter(rec)!.valueType">
-                      <span class="mal__lbl">type</span> {{ asMeter(rec)!.valueType }}
+                    <div><span class="mal__lbl">metric</span> {{ row.meter.metric }}</div>
+                    <div v-if="row.meter.valueType">
+                      <span class="mal__lbl">type</span> {{ row.meter.valueType }}
                     </div>
-                    <div><span class="mal__lbl">entity</span> {{ asMeter(rec)!.entity }}</div>
-                    <div><span class="mal__lbl">value</span> {{ asMeter(rec)!.value }}</div>
-                    <div v-if="asMeter(rec)!.timeBucket !== undefined">
-                      <span class="mal__lbl">timeBucket</span> {{ asMeter(rec)!.timeBucket }}
+                    <div><span class="mal__lbl">entity</span> {{ row.meter.entity }}</div>
+                    <div><span class="mal__lbl">value</span> {{ row.meter.value }}</div>
+                    <div v-if="row.meter.timeBucket !== undefined">
+                      <span class="mal__lbl">timeBucket</span> {{ row.meter.timeBucket }}
                     </div>
                   </div>
                 </template>
               </td>
               <td class="mal__hash">
-                <code>{{ shortHash(rec.contentHash) }}</code>
+                <code>{{ shortHash(row.rec.contentHash) }}</code>
               </td>
             </tr>
           </tbody>
