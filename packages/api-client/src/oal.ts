@@ -15,85 +15,52 @@
  */
 
 /**
- * Read-only OAL management API — `GET /runtime/oal/*` introduced by
- * SWIP-13 §4.1. The OAL debugger's rule picker is the primary
- * consumer; operators also use it to browse what `.oal` content the
- * cluster has loaded.
+ * Read-only OAL listing — `GET /runtime/oal/*` introduced by SWIP-13.
  *
- * **Read-only by design.** OAL hot-update (add / update / inactivate /
- * delete) is a much larger feature with classloader-isolation and
- * cluster-coordination concerns; it is out of scope here and a future
- * SWIP. The path prefix `/runtime/oal/*` is reserved so write
- * endpoints can land additively.
+ * The actual implementation on the `swip-13-dsl-debugger` branch ships a
+ * **per-source-dispatcher** listing, not a per-rule one — the OAL debugger
+ * targets one source (e.g. `Endpoint`) and every metric routed off that
+ * source captures together. So the listing is shaped to match: one row per
+ * dispatcher, with the dispatcher's full metric set inline.
  *
- * The `contentHash` field on every file/rule snapshot is the same
- * SHA-256 the live debugger stamps on captured records — UI matches
- * `record.contentHash` against this hash to render the right YAML
- * alongside captures.
+ * File metadata is also intentionally minimal — `/files` returns just file
+ * names; `/files/{name}` returns the raw `.oal` text as `text/plain`.
+ *
+ * Read-only by design. OAL hot-update is upstream-deferred; the path
+ * prefix `/runtime/oal/*` is reserved for future write endpoints.
  */
 
 import { RuntimeRuleApiError, type ApplyResult } from './types.js';
 import type { FetchLike } from './runtime-rule.js';
 
-export type OalFileStatus = 'LOADED' | 'DISABLED' | 'COMPILE_FAILED';
-
-/** Filter clause as parsed by the OAL grammar. */
-export interface OalFilterSnapshot {
-  /** Source-side expression, e.g. `endpoint.name` or
-   *  `endpoint.serviceName`. */
-  left: string;
-  /** Operator symbol — `==`, `!=`, `like`, `in`, etc. */
-  op: string;
-  /** Right-hand side as written in the rule (string-literal,
-   *  numeric, list literal, …). */
-  right: string;
+export interface OalFilesResponse {
+  /** OAL file names (with extension), e.g. `core.oal`. */
+  files: string[];
+  count: number;
 }
 
-export interface OalRuleSnapshot {
-  /** OAL file (without extension), e.g. `core`. */
-  file: string;
-  /** Rule name as written in the file, e.g. `endpoint_cpm`. */
-  ruleName: string;
-  /** 1-based line number in the `.oal` file where the rule starts. */
-  line: number;
-  /** Source scope as a Java-style class name, e.g. `Endpoint`. */
-  sourceScope: string;
-  /** Verbatim rule expression (one logical line, may span physical
-   *  lines in the source). */
-  expression: string;
-  /** Aggregation function — `cpm`, `longAvg`, `apdex`,
-   *  `percentile`, etc. */
-  function: string;
-  /** Filter clauses in source order. Empty when the rule has no
-   *  `.filter(...)` chain. */
-  filters: OalFilterSnapshot[];
-  /** The metric name the rule persists under, e.g.
-   *  `endpoint_cpm`. Usually equal to `ruleName` but may differ if
-   *  the OAL parser rewrites it. */
-  persistedMetricName: string;
-  /** SHA-256 of the file's content, hex-encoded lowercase (64
-   *  chars). Same hash the live debugger stamps on captured records;
-   *  used to correlate captures with the rule version that produced
-   *  them. */
-  contentHash: string;
+/** One row per dispatcher in the running OAP. The OAL debugger targets a
+ *  source — every metric on that source captures together. */
+export interface OalSourceListing {
+  /** OAL source class name without `Dispatcher` suffix, e.g. `Endpoint`. */
+  source: string;
+  /** Fully-qualified dispatcher class name. */
+  dispatcher: string;
+  /** Metric names routed off this source. */
+  metrics: string[];
 }
 
-export interface OalFileListing {
-  name: string;
-  path: string;
-  ruleCount: number;
-  status: OalFileStatus;
-  contentHash: string;
+export interface OalRulesResponse {
+  sources: OalSourceListing[];
+  count: number;
 }
 
-export interface OalFileDetail {
-  name: string;
-  path: string;
-  /** Raw `.oal` text. */
-  content: string;
-  rules: OalRuleSnapshot[];
-  status: OalFileStatus;
-  contentHash: string;
+/** Per-source detail. `status: "live"` means the dispatcher's
+ *  `DebugHolderProvider` has a holder ready — a session install will
+ *  succeed. `no_holder` means it isn't bound yet (rare race; usually
+ *  startup-only). */
+export interface OalSourceDetail extends OalSourceListing {
+  status: 'live' | 'no_holder';
 }
 
 export interface OalClientOptions {
@@ -105,9 +72,7 @@ export interface OalClientOptions {
 }
 
 /**
- * Typed wrapper for the four read-only OAL endpoints SWIP-13 §4.1
- * adds to admin-server. Mirrors the shape of `RuntimeRuleClient` so
- * callers can wire a single fetch impl across both.
+ * Typed wrapper for the four read-only OAL endpoints.
  */
 export class OalClient {
   private readonly fetchImpl: FetchLike;
@@ -122,48 +87,48 @@ export class OalClient {
     this.timeoutMs = options.timeoutMs ?? 0;
   }
 
-  /** `GET /runtime/oal/files` — one row per loaded `.oal` file. */
-  async listFiles(): Promise<OalFileListing[]> {
+  /** `GET /runtime/oal/files` — bare file-name listing. */
+  async listFiles(): Promise<OalFilesResponse> {
     const url = `${this.base}/runtime/oal/files`;
     const res = await this.send(url, { method: 'GET' });
     if (!res.ok) throw await this.toError(res, url);
-    return (await res.json()) as OalFileListing[];
+    return (await res.json()) as OalFilesResponse;
   }
 
-  /** `GET /runtime/oal/files/{name}` — file + parsed rules + raw
-   *  text. Returns `null` when the file isn't loaded. */
-  async getFile(name: string): Promise<OalFileDetail | null> {
+  /** `GET /runtime/oal/files/{name}` — returns raw `.oal` text
+   *  (`text/plain`). Returns `null` when the file isn't loaded. */
+  async getFileContent(name: string): Promise<string | null> {
     const url = `${this.base}/runtime/oal/files/${encodeURIComponent(name)}`;
     const res = await this.send(url, { method: 'GET' });
     if (res.status === 404) return null;
     if (!res.ok) throw await this.toError(res, url);
-    return (await res.json()) as OalFileDetail;
+    return await res.text();
   }
 
-  /** `GET /runtime/oal/rules` — flat list across every file. The
-   *  picker the OAL live debugger uses. */
-  async listRules(): Promise<OalRuleSnapshot[]> {
+  /** `GET /runtime/oal/rules` — per-dispatcher listing for the picker. */
+  async listSources(): Promise<OalRulesResponse> {
     const url = `${this.base}/runtime/oal/rules`;
     const res = await this.send(url, { method: 'GET' });
     if (!res.ok) throw await this.toError(res, url);
-    return (await res.json()) as OalRuleSnapshot[];
+    return (await res.json()) as OalRulesResponse;
   }
 
-  /** `GET /runtime/oal/rules/{ruleName}` — single rule detail.
-   *  Returns `null` when no rule by that name is loaded. */
-  async getRule(ruleName: string): Promise<OalRuleSnapshot | null> {
-    const url = `${this.base}/runtime/oal/rules/${encodeURIComponent(ruleName)}`;
+  /** `GET /runtime/oal/rules/{source}` — single-source detail with
+   *  holder-bound status. Path param is the source class name. Returns
+   *  `null` when no dispatcher owns that source. */
+  async getSource(source: string): Promise<OalSourceDetail | null> {
+    const url = `${this.base}/runtime/oal/rules/${encodeURIComponent(source)}`;
     const res = await this.send(url, { method: 'GET' });
     if (res.status === 404) return null;
     if (!res.ok) throw await this.toError(res, url);
-    return (await res.json()) as OalRuleSnapshot;
+    return (await res.json()) as OalSourceDetail;
   }
 
   // ── private helpers ─────────────────────────────────────────────
 
   private async send(url: string, init: RequestInit): Promise<Response> {
     const headers: Record<string, string> = {
-      Accept: 'application/json',
+      Accept: 'application/json, text/plain',
       ...this.defaultHeaders,
       ...((init.headers as Record<string, string>) ?? {}),
     };
