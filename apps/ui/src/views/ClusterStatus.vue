@@ -16,7 +16,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
-import { bff, type ClusterRule } from '../api/client.js';
+import { bff, type ClusterDebugStatus, type ClusterRule } from '../api/client.js';
 import Pill from '../design/primitives/Pill.vue';
 import StatusDot from '../design/primitives/StatusDot.vue';
 import Btn from '../design/primitives/Btn.vue';
@@ -27,6 +27,33 @@ const query = useQuery({
   refetchInterval: 5_000,
   refetchOnWindowFocus: true,
 });
+
+/**
+ * SWIP-13 §3.9 — DSL-debugging health snapshot per node.
+ * `injectionEnabled: false` means probe call sites were stripped at
+ * build/boot — operators see this and know live debugging won't fire
+ * regardless of session state. Polled at the same 5 s cadence as the
+ * rules matrix.
+ */
+const debugStatusQuery = useQuery({
+  queryKey: ['debug/status'],
+  queryFn: (): Promise<ClusterDebugStatus> => bff.debugStatus(),
+  refetchInterval: 5_000,
+  refetchOnWindowFocus: true,
+});
+
+const debugNodes = computed(() => debugStatusQuery.data.value?.nodes ?? []);
+
+function debugStatusBadgeTone(
+  ok: boolean,
+  injectionEnabled: boolean | undefined,
+  acceptingNew: boolean | undefined,
+): 'ok' | 'warn' | 'err' | 'dim' {
+  if (!ok) return 'err';
+  if (injectionEnabled === false) return 'err';
+  if (acceptingNew === false) return 'warn';
+  return 'ok';
+}
 
 type SortKey = 'name' | 'state' | 'converged';
 const sortKey = ref<SortKey>('state');
@@ -129,6 +156,79 @@ function nodeLabel(url: string): string {
       </ul>
     </section>
 
+    <section class="cs__debug">
+      <header class="cs__sectionhead">
+        dsl-debugging
+        <span class="cs__sectionhint">
+          probe injection · session pressure · per node
+        </span>
+      </header>
+
+      <div v-if="debugStatusQuery.isPending.value" class="cs__placeholder">loading…</div>
+      <div v-else-if="debugStatusQuery.isError.value" class="cs__placeholder cs__placeholder--err">
+        Could not load /api/debug/status.
+        <Btn @click="debugStatusQuery.refetch()">retry</Btn>
+      </div>
+      <div v-else-if="debugNodes.length === 0" class="cs__placeholder">
+        No admin URLs configured.
+      </div>
+
+      <table v-else class="cs__dbgtable">
+        <thead>
+          <tr>
+            <th>node</th>
+            <th>health</th>
+            <th>injection</th>
+            <th>accepting new</th>
+            <th>active</th>
+            <th>probes</th>
+            <th>injection source</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="n in debugNodes" :key="n.url">
+            <td class="cs__dbgnode">{{ nodeLabel(n.url) }}</td>
+            <td>
+              <Pill
+                :tone="debugStatusBadgeTone(n.ok, n.status?.injectionEnabled, n.status?.sessionsAcceptingNewRequests)"
+              >
+                {{ n.ok ? 'reachable' : 'unreachable' }}
+              </Pill>
+              <span v-if="!n.ok && n.error" class="cs__dbgerr" :title="n.error">{{ n.error }}</span>
+            </td>
+            <td>
+              <Pill v-if="!n.ok" tone="dim">—</Pill>
+              <Pill v-else-if="n.status?.injectionEnabled" tone="ok">enabled</Pill>
+              <Pill v-else tone="err">disabled</Pill>
+            </td>
+            <td>
+              <Pill v-if="!n.ok" tone="dim">—</Pill>
+              <Pill v-else-if="n.status?.sessionsAcceptingNewRequests" tone="ok">yes</Pill>
+              <Pill v-else tone="warn">no</Pill>
+            </td>
+            <td class="cs__dbgnum">
+              <template v-if="n.ok && n.status">
+                {{ n.status.activeSessions }}
+                <span class="cs__dbgmax">/ {{ n.status.maxActiveSessions }}</span>
+              </template>
+              <span v-else>—</span>
+            </td>
+            <td class="cs__dbgnum">
+              <template v-if="n.ok && n.status">
+                {{ n.status.ruleClassesWithProbes }}
+                <span class="cs__dbgmax">/ {{ n.status.ruleClassesTotal }}</span>
+              </template>
+              <span v-else>—</span>
+            </td>
+            <td class="cs__dbgsource">
+              <code v-if="n.ok && n.status?.injectionEnabledSource">{{ n.status.injectionEnabledSource }}</code>
+              <span v-else>—</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <section class="cs__matrix">
       <header class="cs__sectionhead">
         rules
@@ -215,6 +315,73 @@ function nodeLabel(url: string): string {
 </template>
 
 <style scoped>
+.cs__sectionhint {
+  margin-left: 8px;
+  font-family: var(--rr-font-sans);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--rr-dim);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.cs__debug {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cs__dbgtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: var(--rr-bg2);
+  border: 1px solid var(--rr-border);
+}
+
+.cs__dbgtable th,
+.cs__dbgtable td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--rr-border);
+}
+
+.cs__dbgtable th {
+  font-family: var(--rr-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+}
+
+.cs__dbgnode {
+  font-family: var(--rr-font-mono);
+  color: var(--rr-heading);
+}
+
+.cs__dbgnum {
+  font-family: var(--rr-font-mono);
+  color: var(--rr-ink);
+}
+
+.cs__dbgmax {
+  color: var(--rr-dim);
+  margin-left: 2px;
+}
+
+.cs__dbgsource code {
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  color: var(--rr-ink2);
+}
+
+.cs__dbgerr {
+  margin-left: 8px;
+  color: var(--rr-dim);
+  font-style: italic;
+  font-size: 11px;
+}
+
 .cs {
   padding: 18px 24px;
   display: flex;
