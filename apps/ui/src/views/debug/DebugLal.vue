@@ -9,29 +9,16 @@
 -->
 <script setup lang="ts">
 /**
- * LAL live-debugger view.
- *
- * The actual wire (per `reference_swip13_actual_wire.md`) doesn't have a
- * `granularity` request param or per-block `blocks?[]` toggle yet — the
- * recorder emits stages directly: `text`, `parser`, `extractor`,
- * `outputRecord`, `outputMetric`. The `line` stage exists in code but
- * `LALDebugRecorderFactory` hard-codes statement-mode off, so it's
- * unreachable from the wire today; we render it if it ever appears.
+ * LAL live-debugger view. Hosted in `<DebugView>`.
  *
  * Each LAL record's payload is `{ sourceLine, body: { aborted,
- * hasOutput, hasParsed, extra: {...} } }`. There's no text/parsed/
- * extracted/sink sub-objects, no `sink` stage at all. The view renders
- * the source line gutter + booleans + per-stage extras, plus a
- * per-record column grid so operators can see one log record's pipeline
- * end-to-end.
+ * hasOutput, hasParsed, extra: {...} } }`. Stages: text / parser /
+ * extractor / outputRecord / outputMetric, plus `line` records when
+ * granularity=statement (one per meaningful DSL statement).
  *
- * For LAL the `name` query param is the file name with extension
- * (e.g. `default.yaml`), and `ruleName` is the rule within the file.
- * `/runtime/rule/list?catalog=lal` returns rows where `name` is the
- * rule name; we don't currently know the file mapping, so the picker
- * prompts the operator for the file with extension (often the
- * default `<ruleName>.yaml` works, but the upstream loader binds
- * names directly).
+ * The `name` query param is the file name with extension (e.g.
+ * `default.yaml`); for runtime-rule-applied LAL the upstream uses
+ * the rule name directly.
  */
 import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
@@ -47,16 +34,11 @@ import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
-import NodeCoverage from './NodeCoverage.vue';
+import DebugView from './DebugView.vue';
 import { isLalPayload, isLalRecord, shortHash } from './payload.js';
 
 const dbg = useDebugSession('lal');
 const selectedRule = ref<string>('');
-/** LAL's file naming isn't surfaced by /runtime/rule/list; default to
- *  `<ruleName>.yaml` and let the operator override. Runtime-rule-applied
- *  LAL uses the rule name as both `name` and `ruleName`, so this field
- *  can be left as-is in that case (the upstream tolerates the .yaml
- *  suffix matching the rule name). */
 const fileName = ref<string>('');
 const granularity = ref<Granularity>('block');
 const recordCap = ref<number>(1000);
@@ -74,8 +56,6 @@ const ruleNames = computed<string[]>(() => {
 });
 
 function onRuleChange(): void {
-  // Default the file name to `<ruleName>.yaml` whenever the rule
-  // changes; operator can edit if upstream uses a different binding.
   if (selectedRule.value && !fileName.value) {
     fileName.value = `${selectedRule.value}.yaml`;
   }
@@ -133,11 +113,9 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
     case 'text':
       return 'ok';
     case 'parser':
-      return 'info';
     case 'extractor':
       return 'info';
     case 'outputRecord':
-      return 'active';
     case 'outputMetric':
       return 'active';
     case 'line':
@@ -146,24 +124,28 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
       return 'dim';
   }
 }
+
+function nodeKey(n: NodeSlice): string {
+  return n.nodeId ?? n.peer ?? '?';
+}
 </script>
 
 <template>
-  <div class="lal">
-    <header class="lal__controls">
-      <div class="lal__field">
-        <label class="lal__label">rule</label>
-        <select v-model="selectedRule" class="lal__select" @change="onRuleChange">
+  <DebugView :dbg="dbg" :node-views="nodeViews">
+    <template #controls>
+      <div class="ctl">
+        <label class="ctl__lbl">rule</label>
+        <select v-model="selectedRule" class="ctl__select" @change="onRuleChange">
           <option value="" disabled>select a LAL rule…</option>
           <option v-for="n in ruleNames" :key="n" :value="n">{{ n }}</option>
         </select>
       </div>
-      <div class="lal__field">
-        <label class="lal__label">file (with extension)</label>
-        <input v-model="fileName" type="text" class="lal__input lal__input--wide" placeholder="default.yaml" />
+      <div class="ctl">
+        <label class="ctl__lbl">file (with extension)</label>
+        <input v-model="fileName" type="text" class="ctl__input ctl__input--wide" placeholder="default.yaml" />
       </div>
-      <div class="lal__field">
-        <label class="lal__label">granularity</label>
+      <div class="ctl">
+        <label class="ctl__lbl">granularity</label>
         <div class="lal__granularity">
           <button
             type="button"
@@ -179,134 +161,87 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
           >statement</button>
         </div>
       </div>
-      <div class="lal__field">
-        <label class="lal__label">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="10000" class="lal__input" />
+      <div class="ctl">
+        <label class="ctl__lbl">recordCap</label>
+        <input v-model.number="recordCap" type="number" min="1" max="10000" class="ctl__input" />
       </div>
-      <div class="lal__field">
-        <label class="lal__label">retention (min)</label>
-        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="lal__input" />
+      <div class="ctl">
+        <label class="ctl__lbl">retention (min)</label>
+        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="ctl__input" />
       </div>
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
-      <span class="lal__statepill">
-        <Pill :tone="dbg.state.value === 'capturing' ? 'active' : dbg.state.value === 'error' ? 'err' : 'dim'">
-          {{ dbg.state.value }}
-        </Pill>
-        <code v-if="dbg.sessionId.value" class="lal__sid">{{ dbg.sessionId.value }}</code>
-      </span>
-    </header>
+    </template>
 
-    <p v-if="dbg.error.value" class="lal__error">{{ dbg.error.value }}</p>
-
-    <NodeCoverage
-      v-if="dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0"
-      :peer-acks="dbg.peerAcks.value"
-      :node-statuses="dbg.session.value?.nodes ?? []"
-      :prior-cleanup="dbg.priorCleanup.value"
-    />
-
-    <section v-if="dbg.session.value" class="lal__capture">
-      <header class="lal__captureh">
-        <span class="lal__sid2">session {{ dbg.session.value.sessionId }}</span>
-      </header>
-
-      <div v-for="node in nodeViews" :key="node.nodeId ?? node.peer ?? '?'" class="lal__node">
-        <header class="lal__nodeh">
-          <span class="lal__nodeid">{{ node.nodeId ?? node.peer ?? '?' }}</span>
-          <Pill :tone="node.status === 'ok' ? 'ok' : node.status === 'captured' ? 'info' : 'warn'">
-            {{ node.status }}
-          </Pill>
-          <span v-if="node.totalBytes !== undefined" class="lal__bytes">
-            {{ node.totalBytes }} bytes
-          </span>
-        </header>
-
-        <div v-if="node.rows.length === 0" class="lal__nodeempty">
-          no LAL records from this node
-        </div>
-
-        <table v-else class="lal__waterfall">
-          <thead>
-            <tr>
-              <th class="lal__line">ln</th>
-              <th class="lal__source">source</th>
-              <th class="lal__kind">stage</th>
-              <th class="lal__result">body summary</th>
-              <th class="lal__extra">extra</th>
-              <th class="lal__hash">hash</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, idx) in node.rows" :key="`${node.nodeId ?? node.peer ?? '?'}-${idx}`">
-              <td class="lal__line">{{ row.payload?.sourceLine ?? '—' }}</td>
-              <td class="lal__source"><code>{{ row.rec.sourceText }}</code></td>
-              <td class="lal__kind">
-                <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
-              </td>
-              <td class="lal__result">
-                <template v-if="row.payload">
-                  <div class="lal__flags">
-                    <span v-if="row.payload.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
-                    <span v-if="row.payload.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
-                    <span v-if="row.payload.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
-                  </div>
-                </template>
-              </td>
-              <td class="lal__extra">
-                <template v-if="row.payload?.body.extra">
-                  <div v-if="row.payload.body.extra.outputClass" class="lal__extraitem">
-                    <span class="lal__lbl">class</span>
-                    <code>{{ row.payload.body.extra.outputClass }}</code>
-                  </div>
-                  <div v-if="row.payload.body.extra.samples !== undefined" class="lal__extraitem">
-                    <span class="lal__lbl">samples</span>
-                    {{ row.payload.body.extra.samples }}
-                  </div>
-                </template>
-              </td>
-              <td class="lal__hash">
-                <code>{{ shortHash(row.rec.contentHash) }}</code>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <p v-else-if="dbg.state.value === 'idle'" class="lal__hint">
+    <template #idle-hint>
       pick a LAL rule, set the file (typically <code>{ruleName}.yaml</code>),
       hit start. each captured log record fills one row per probed stage —
       the upstream emits text → parser → extractor → outputRecord /
-      outputMetric for kept records.
-    </p>
-  </div>
+      outputMetric for kept records. Statement granularity adds one
+      <code>line</code> row per DSL statement.
+    </template>
+
+    <template #node-body="{ node }">
+      <div v-if="node.rows.length === 0" class="lal__empty">
+        no LAL records from this node
+      </div>
+      <table v-else class="lal__waterfall">
+        <thead>
+          <tr>
+            <th class="lal__line">ln</th>
+            <th class="lal__source">source</th>
+            <th class="lal__kind">stage</th>
+            <th class="lal__result">body summary</th>
+            <th class="lal__extra">extra</th>
+            <th class="lal__hash">hash</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, idx) in node.rows" :key="`${nodeKey(node)}-${idx}`">
+            <td class="lal__line">{{ row.payload?.sourceLine ?? '—' }}</td>
+            <td class="lal__source"><code>{{ row.rec.sourceText }}</code></td>
+            <td class="lal__kind">
+              <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
+            </td>
+            <td class="lal__result">
+              <template v-if="row.payload">
+                <div class="lal__flags">
+                  <span v-if="row.payload.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
+                  <span v-if="row.payload.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
+                  <span v-if="row.payload.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
+                </div>
+              </template>
+            </td>
+            <td class="lal__extra">
+              <template v-if="row.payload?.body.extra">
+                <div v-if="row.payload.body.extra.outputClass" class="lal__extraitem">
+                  <span class="lal__lbl">class</span>
+                  <code>{{ row.payload.body.extra.outputClass }}</code>
+                </div>
+                <div v-if="row.payload.body.extra.samples !== undefined" class="lal__extraitem">
+                  <span class="lal__lbl">samples</span>
+                  {{ row.payload.body.extra.samples }}
+                </div>
+              </template>
+            </td>
+            <td class="lal__hash">
+              <code>{{ shortHash(row.rec.contentHash) }}</code>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </template>
+  </DebugView>
 </template>
 
 <style scoped>
-.lal {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
-.lal__controls {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.lal__field {
+.ctl {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.lal__label {
+.ctl__lbl {
   font-family: var(--rr-font-mono);
   font-size: 9.5px;
   letter-spacing: 1.1px;
@@ -314,12 +249,12 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   color: var(--rr-dim);
 }
 
-.lal__select {
+.ctl__select {
   min-width: 240px;
 }
 
-.lal__select,
-.lal__input {
+.ctl__select,
+.ctl__input {
   background: var(--rr-bg2);
   color: var(--rr-ink);
   border: 1px solid var(--rr-border);
@@ -328,11 +263,11 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   font-size: 12px;
 }
 
-.lal__input {
+.ctl__input {
   width: 90px;
 }
 
-.lal__input--wide {
+.ctl__input--wide {
   width: 200px;
 }
 
@@ -361,76 +296,7 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   background: var(--rr-bg3);
 }
 
-.lal__statepill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-}
-
-.lal__sid {
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.lal__sid2 {
-  font-family: var(--rr-font-mono);
-  color: var(--rr-heading);
-  font-size: 12px;
-}
-
-.lal__error {
-  padding: 8px 12px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-err, #f44);
-  color: var(--rr-err, #f44);
-  font-size: 12px;
-  margin: 0;
-}
-
-.lal__capture {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  padding: 12px;
-}
-
-.lal__captureh {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.lal__node {
-  border: 1px solid var(--rr-border);
-}
-
-.lal__nodeh {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--rr-bg3);
-  border-bottom: 1px solid var(--rr-border);
-}
-
-.lal__nodeid {
-  font-family: var(--rr-font-mono);
-  font-size: 12px;
-  color: var(--rr-heading);
-}
-
-.lal__bytes {
-  margin-left: auto;
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.lal__nodeempty {
+.lal__empty {
   padding: 14px;
   font-size: 11.5px;
   color: var(--rr-dim);
@@ -534,20 +400,5 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   font-family: var(--rr-font-mono);
   font-size: 11px;
   color: var(--rr-dim);
-}
-
-.lal__hint {
-  padding: 14px 18px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  color: var(--rr-dim);
-  font-size: 12px;
-  margin: 0;
-}
-
-.lal__hint code {
-  font-family: var(--rr-font-mono);
-  background: var(--rr-bg);
-  padding: 1px 4px;
 }
 </style>

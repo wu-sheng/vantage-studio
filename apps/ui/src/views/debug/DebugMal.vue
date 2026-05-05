@@ -15,6 +15,9 @@
  * terminals; `{ metric, entity, value, valueType?, timeBucket? }` for
  * meterBuild / meterEmit). No row-level sample arrays, no
  * `meterEntities[]`.
+ *
+ * Hosted in `<DebugView>` — this file owns only the picker, the
+ * MAL-specific row narrowing, and the per-row table renderer.
  */
 import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
@@ -31,7 +34,7 @@ import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
-import NodeCoverage from './NodeCoverage.vue';
+import DebugView from './DebugView.vue';
 import {
   isMalMeterPayload,
   isMalRecord,
@@ -95,22 +98,12 @@ async function startSampling(): Promise<void> {
   await dbg.start({
     catalog: rule.catalog,
     name: rule.name,
-    // MAL upstream uses (name, ruleName) where name is the rule name
-    // for runtime-rule catalogs. Pass through verbatim.
     ruleName: rule.name,
     recordCap: recordCap.value,
     retentionMillis: retentionMinutes.value * 60 * 1000,
   });
 }
 
-/**
- * Pre-narrowed MAL row — one of these is computed per record once per
- * poll, so the template reads `row.samples` / `row.meter` directly
- * instead of calling type-narrowing helpers 5+ times per cell.
- *
- * At recordCap = 1000 this cuts the active-path render from ~5000
- * helper calls to 1000 once-only narrowings.
- */
 interface MalRow {
   rec: SessionRecord;
   samples: MalSamplesPayload | null;
@@ -152,151 +145,107 @@ function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim
       return 'dim';
   }
 }
+
+function nodeKey(n: NodeSlice): string {
+  return n.nodeId ?? n.peer ?? '?';
+}
 </script>
 
 <template>
-  <div class="mal">
-    <header class="mal__controls">
-      <div class="mal__field">
-        <label class="mal__label">rule</label>
-        <select v-model="selectedKey" class="mal__select">
+  <DebugView :dbg="dbg" :node-views="nodeViews">
+    <template #controls>
+      <div class="ctl">
+        <label class="ctl__lbl">rule</label>
+        <select v-model="selectedKey" class="ctl__select">
           <option value="" disabled>select a MAL rule…</option>
           <option v-for="r in ruleOptions" :key="`${r.catalog}/${r.name}`" :value="`${r.catalog}/${r.name}`">
             {{ r.catalog }} · {{ r.name }} · {{ shortHash(r.contentHash) }}
           </option>
         </select>
       </div>
-      <div class="mal__field">
-        <label class="mal__label">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="10000" class="mal__input" />
+      <div class="ctl">
+        <label class="ctl__lbl">recordCap</label>
+        <input v-model.number="recordCap" type="number" min="1" max="10000" class="ctl__input" />
       </div>
-      <div class="mal__field">
-        <label class="mal__label">retention (min)</label>
-        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="mal__input" />
+      <div class="ctl">
+        <label class="ctl__lbl">retention (min)</label>
+        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="ctl__input" />
       </div>
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
-      <span class="mal__statepill">
-        <Pill :tone="dbg.state.value === 'capturing' ? 'active' : dbg.state.value === 'error' ? 'err' : 'dim'">
-          {{ dbg.state.value }}
-        </Pill>
-        <code v-if="dbg.sessionId.value" class="mal__sid">{{ dbg.sessionId.value }}</code>
-      </span>
-    </header>
+    </template>
 
-    <p v-if="dbg.error.value" class="mal__error">{{ dbg.error.value }}</p>
-
-    <NodeCoverage
-      v-if="dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0"
-      :peer-acks="dbg.peerAcks.value"
-      :node-statuses="dbg.session.value?.nodes ?? []"
-      :prior-cleanup="dbg.priorCleanup.value"
-    />
-
-    <section v-if="dbg.session.value" class="mal__capture">
-      <header class="mal__captureh">
-        <span class="mal__sid2">session {{ dbg.session.value.sessionId }}</span>
-      </header>
-
-      <div v-for="node in nodeViews" :key="node.nodeId ?? node.peer ?? '?'" class="mal__node">
-        <header class="mal__nodeh">
-          <span class="mal__nodeid">{{ node.nodeId ?? node.peer ?? '?' }}</span>
-          <Pill :tone="node.status === 'ok' ? 'ok' : node.status === 'captured' ? 'info' : 'warn'">
-            {{ node.status }}
-          </Pill>
-          <span v-if="node.totalBytes !== undefined" class="mal__bytes">
-            {{ node.totalBytes }} bytes
-          </span>
-        </header>
-
-        <div v-if="node.rows.length === 0" class="mal__nodeempty">
-          no MAL records from this node
-        </div>
-
-        <table v-else class="mal__waterfall">
-          <thead>
-            <tr>
-              <th class="mal__source">source / fragment</th>
-              <th class="mal__kind">stage</th>
-              <th class="mal__result">result</th>
-              <th class="mal__hash">hash</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, idx) in node.rows" :key="`${node.nodeId ?? node.peer ?? '?'}-${idx}`">
-              <td class="mal__source">
-                <code>{{ row.rec.sourceText }}</code>
-              </td>
-              <td class="mal__kind">
-                <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
-              </td>
-              <td class="mal__result">
-                <template v-if="row.samples">
-                  <div class="mal__counts">
-                    <span v-if="row.samples.empty">empty family</span>
-                    <span v-else>samples · {{ row.samples.samples ?? 0 }}</span>
-                    <span v-if="row.samples.extra?.kept !== undefined">
-                      kept · {{ row.samples.extra.kept }}
-                    </span>
-                    <span v-if="row.samples.extra?.entities !== undefined">
-                      entities · {{ row.samples.extra.entities }}
-                    </span>
-                  </div>
-                </template>
-                <template v-else-if="row.meter">
-                  <div class="mal__meter">
-                    <div><span class="mal__lbl">metric</span> {{ row.meter.metric }}</div>
-                    <div v-if="row.meter.valueType">
-                      <span class="mal__lbl">type</span> {{ row.meter.valueType }}
-                    </div>
-                    <div><span class="mal__lbl">entity</span> {{ row.meter.entity }}</div>
-                    <div><span class="mal__lbl">value</span> {{ row.meter.value }}</div>
-                    <div v-if="row.meter.timeBucket !== undefined">
-                      <span class="mal__lbl">timeBucket</span> {{ row.meter.timeBucket }}
-                    </div>
-                  </div>
-                </template>
-              </td>
-              <td class="mal__hash">
-                <code>{{ shortHash(row.rec.contentHash) }}</code>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <p v-else-if="dbg.state.value === 'idle'" class="mal__hint">
+    <template #idle-hint>
       pick a rule and hit start. each session captures one rule's pipeline
       stages on every cluster node simultaneously.
-    </p>
-  </div>
+    </template>
+
+    <template #node-body="{ node }">
+      <div v-if="node.rows.length === 0" class="mal__empty">
+        no MAL records from this node
+      </div>
+      <table v-else class="mal__waterfall">
+        <thead>
+          <tr>
+            <th class="mal__source">source / fragment</th>
+            <th class="mal__kind">stage</th>
+            <th class="mal__result">result</th>
+            <th class="mal__hash">hash</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, idx) in node.rows" :key="`${nodeKey(node)}-${idx}`">
+            <td class="mal__source">
+              <code>{{ row.rec.sourceText }}</code>
+            </td>
+            <td class="mal__kind">
+              <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
+            </td>
+            <td class="mal__result">
+              <template v-if="row.samples">
+                <div class="mal__counts">
+                  <span v-if="row.samples.empty">empty family</span>
+                  <span v-else>samples · {{ row.samples.samples ?? 0 }}</span>
+                  <span v-if="row.samples.extra?.kept !== undefined">
+                    kept · {{ row.samples.extra.kept }}
+                  </span>
+                  <span v-if="row.samples.extra?.entities !== undefined">
+                    entities · {{ row.samples.extra.entities }}
+                  </span>
+                </div>
+              </template>
+              <template v-else-if="row.meter">
+                <div class="mal__meter">
+                  <div><span class="mal__lbl">metric</span> {{ row.meter.metric }}</div>
+                  <div v-if="row.meter.valueType">
+                    <span class="mal__lbl">type</span> {{ row.meter.valueType }}
+                  </div>
+                  <div><span class="mal__lbl">entity</span> {{ row.meter.entity }}</div>
+                  <div><span class="mal__lbl">value</span> {{ row.meter.value }}</div>
+                  <div v-if="row.meter.timeBucket !== undefined">
+                    <span class="mal__lbl">timeBucket</span> {{ row.meter.timeBucket }}
+                  </div>
+                </div>
+              </template>
+            </td>
+            <td class="mal__hash">
+              <code>{{ shortHash(row.rec.contentHash) }}</code>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </template>
+  </DebugView>
 </template>
 
 <style scoped>
-.mal {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
-.mal__controls {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.mal__field {
+.ctl {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.mal__label {
+.ctl__lbl {
   font-family: var(--rr-font-mono);
   font-size: 9.5px;
   letter-spacing: 1.1px;
@@ -304,12 +253,12 @@ function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim
   color: var(--rr-dim);
 }
 
-.mal__select {
+.ctl__select {
   min-width: 320px;
 }
 
-.mal__select,
-.mal__input {
+.ctl__select,
+.ctl__input {
   background: var(--rr-bg2);
   color: var(--rr-ink);
   border: 1px solid var(--rr-border);
@@ -318,80 +267,11 @@ function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim
   font-size: 12px;
 }
 
-.mal__input {
+.ctl__input {
   width: 90px;
 }
 
-.mal__statepill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-}
-
-.mal__sid {
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.mal__sid2 {
-  font-family: var(--rr-font-mono);
-  color: var(--rr-heading);
-  font-size: 12px;
-}
-
-.mal__error {
-  padding: 8px 12px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-err, #f44);
-  color: var(--rr-err, #f44);
-  font-size: 12px;
-  margin: 0;
-}
-
-.mal__capture {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  padding: 12px;
-}
-
-.mal__captureh {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.mal__node {
-  border: 1px solid var(--rr-border);
-}
-
-.mal__nodeh {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--rr-bg3);
-  border-bottom: 1px solid var(--rr-border);
-}
-
-.mal__nodeid {
-  font-family: var(--rr-font-mono);
-  font-size: 12px;
-  color: var(--rr-heading);
-}
-
-.mal__bytes {
-  margin-left: auto;
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.mal__nodeempty {
+.mal__empty {
   padding: 14px;
   font-size: 11.5px;
   color: var(--rr-dim);
@@ -469,14 +349,5 @@ function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim
   text-transform: uppercase;
   letter-spacing: 0.8px;
   margin-right: 6px;
-}
-
-.mal__hint {
-  padding: 14px 18px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  color: var(--rr-dim);
-  font-size: 12px;
-  margin: 0;
 }
 </style>

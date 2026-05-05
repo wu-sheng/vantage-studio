@@ -9,18 +9,13 @@
 -->
 <script setup lang="ts">
 /**
- * OAL live-debugger view. SWIP-13's actual wire is per-source-dispatcher,
- * not per-rule — picking a source captures every metric routed off it.
+ * OAL live-debugger view. Hosted in `<DebugView>`.
  *
- * Picker is fed by `/runtime/oal/rules` (one row per dispatcher, with
- * the source's full metric set). Session targets `(catalog: oal,
- * name: <source>, ruleName: <source>)` per `RuntimeOalRestHandler.java`.
+ * Picker is fed by `/runtime/oal/rules` (per-dispatcher); session
+ * targets `(oal, source, source)` per the upstream RuntimeOalRestHandler.
  *
- * Stages emitted: `source`, `filter`, `build`, `aggregation`, `emit`.
- * `build` is what the design called `build_metrics`. No `(implicit)`
- * badge — the wire doesn't tag stages that way; just render each one
- * with its sourceText (the metric name carries through `source` /
- * `aggregation` / `emit` records as the verbatim fragment).
+ * Stages: source / filter / build / aggregation / emit. Records are
+ * grouped per source row (each `source` record opens a new pipeline).
  */
 import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
@@ -36,7 +31,7 @@ import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
-import NodeCoverage from './NodeCoverage.vue';
+import DebugView from './DebugView.vue';
 import {
   isOalMetricsPayload,
   isOalRecord,
@@ -76,8 +71,6 @@ async function startSampling(): Promise<void> {
   if (!selectedSource.value) return;
   await dbg.start({
     catalog: 'oal',
-    // Per upstream RuntimeOalRestHandler: name and ruleName are both
-    // the source class name for OAL.
     name: selectedSource.value,
     ruleName: selectedSource.value,
     recordCap: recordCap.value,
@@ -100,10 +93,6 @@ interface OalNodeView extends NodeSlice {
   groups: OalRecordGroup[];
 }
 
-/** Pre-shape and group in one pass per poll. Source rows delineate
- *  groups (each `source` record starts a new pipeline); within each
- *  group every record gets its payload pre-narrowed for the
- *  template. */
 const nodeViews = computed<OalNodeView[]>(() => {
   const s = dbg.session.value;
   if (!s) return [];
@@ -135,7 +124,6 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
     case 'emit':
       return 'active';
     case 'aggregation':
-      return 'info';
     case 'build':
       return 'info';
     case 'filter':
@@ -146,14 +134,18 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
       return 'dim';
   }
 }
+
+function nodeKey(n: NodeSlice): string {
+  return n.nodeId ?? n.peer ?? '?';
+}
 </script>
 
 <template>
-  <div class="oal">
-    <header class="oal__controls">
-      <div class="oal__field">
-        <label class="oal__label">source</label>
-        <select v-model="selectedSource" class="oal__select" :disabled="sourcesQuery.isPending.value">
+  <DebugView :dbg="dbg" :node-views="nodeViews">
+    <template #controls>
+      <div class="ctl">
+        <label class="ctl__lbl">source</label>
+        <select v-model="selectedSource" class="ctl__select" :disabled="sourcesQuery.isPending.value">
           <option value="" disabled>
             {{ sourcesQuery.isPending.value ? 'loading…' : 'select an OAL source…' }}
           </option>
@@ -162,155 +154,104 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
           </option>
         </select>
       </div>
-      <div class="oal__field">
-        <label class="oal__label">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="10000" class="oal__input" />
+      <div class="ctl">
+        <label class="ctl__lbl">recordCap</label>
+        <input v-model.number="recordCap" type="number" min="1" max="10000" class="ctl__input" />
       </div>
-      <div class="oal__field">
-        <label class="oal__label">retention (min)</label>
-        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="oal__input" />
+      <div class="ctl">
+        <label class="ctl__lbl">retention (min)</label>
+        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="ctl__input" />
       </div>
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
-      <span class="oal__statepill">
-        <Pill :tone="dbg.state.value === 'capturing' ? 'active' : dbg.state.value === 'error' ? 'err' : 'dim'">
-          {{ dbg.state.value }}
-        </Pill>
-        <code v-if="dbg.sessionId.value" class="oal__sid">{{ dbg.sessionId.value }}</code>
-      </span>
-    </header>
+    </template>
 
-    <p v-if="sourcesQuery.isError.value" class="oal__error">
-      Could not load OAL sources.
-      <button type="button" @click="sourcesQuery.refetch()">retry</button>
-    </p>
-
-    <p v-if="dbg.error.value" class="oal__error">{{ dbg.error.value }}</p>
-
-    <div v-if="selectedDetail" class="oal__sourcecard">
-      <header>
-        <span class="oal__sourcekey">{{ selectedDetail.source }}</span>
-        <code class="oal__dispatcher">{{ selectedDetail.dispatcher }}</code>
-      </header>
-      <div class="oal__metrics">
-        <span v-for="m in selectedDetail.metrics" :key="m" class="oal__metric">{{ m }}</span>
-      </div>
-    </div>
-
-    <NodeCoverage
-      v-if="dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0"
-      :peer-acks="dbg.peerAcks.value"
-      :node-statuses="dbg.session.value?.nodes ?? []"
-      :prior-cleanup="dbg.priorCleanup.value"
-    />
-
-    <section v-if="dbg.session.value" class="oal__capture">
-      <header class="oal__captureh">
-        <span class="oal__sid2">session {{ dbg.session.value.sessionId }}</span>
-      </header>
-
-      <div v-for="node in nodeViews" :key="node.nodeId ?? node.peer ?? '?'" class="oal__node">
-        <header class="oal__nodeh">
-          <span class="oal__nodeid">{{ node.nodeId ?? node.peer ?? '?' }}</span>
-          <Pill :tone="node.status === 'ok' ? 'ok' : node.status === 'captured' ? 'info' : 'warn'">
-            {{ node.status }}
-          </Pill>
-          <span v-if="node.totalBytes !== undefined" class="oal__bytes">
-            {{ node.totalBytes }} bytes
-          </span>
+    <template #subhead>
+      <p v-if="sourcesQuery.isError.value" class="oal__error">
+        Could not load OAL sources.
+        <button type="button" @click="sourcesQuery.refetch()">retry</button>
+      </p>
+      <div v-if="selectedDetail" class="oal__sourcecard">
+        <header>
+          <span class="oal__sourcekey">{{ selectedDetail.source }}</span>
+          <code class="oal__dispatcher">{{ selectedDetail.dispatcher }}</code>
         </header>
-
-        <div v-if="node.groups.length === 0" class="oal__nodeempty">
-          no source rows captured on this node
-        </div>
-
-        <div v-else class="oal__groups">
-          <article
-            v-for="g in node.groups"
-            :key="g.index"
-            class="oal__group"
-          >
-            <header class="oal__grouph">
-              <span class="oal__groupid">source row #{{ g.index }}</span>
-            </header>
-            <table class="oal__waterfall">
-              <thead>
-                <tr>
-                  <th class="oal__source">fragment</th>
-                  <th class="oal__kind">stage</th>
-                  <th class="oal__result">result</th>
-                  <th class="oal__hash">hash</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(row, idx) in g.rows" :key="`${node.nodeId ?? node.peer ?? '?'}-${g.index}-${idx}`">
-                  <td class="oal__source"><code>{{ row.rec.sourceText }}</code></td>
-                  <td class="oal__kind">
-                    <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
-                  </td>
-                  <td class="oal__result">
-                    <template v-if="row.source">
-                      <div><span class="oal__lbl">type</span> {{ row.source.type }}</div>
-                      <div v-if="row.source.scope !== undefined">
-                        <span class="oal__lbl">scope</span> {{ row.source.scope }}
-                      </div>
-                      <div v-if="row.source.extra?.kept !== undefined">
-                        <span class="oal__lbl">kept</span>
-                        <Pill :tone="row.source.extra.kept ? 'ok' : 'warn'">
-                          {{ row.source.extra.kept }}
-                        </Pill>
-                      </div>
-                    </template>
-                    <template v-else-if="row.metrics">
-                      <div><span class="oal__lbl">type</span> {{ row.metrics.type }}</div>
-                      <div>
-                        <span class="oal__lbl">timeBucket</span> {{ row.metrics.timeBucket }}
-                      </div>
-                    </template>
-                  </td>
-                  <td class="oal__hash">
-                    <code>{{ shortHash(row.rec.contentHash) }}</code>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </article>
+        <div class="oal__metrics">
+          <span v-for="m in selectedDetail.metrics" :key="m" class="oal__metric">{{ m }}</span>
         </div>
       </div>
-    </section>
+    </template>
 
-    <p v-else-if="dbg.state.value === 'idle'" class="oal__hint">
+    <template #idle-hint>
       pick a source and hit start. each captured Source row produces a
       pipeline of stages — source → filter → build → aggregation → emit
       — and every metric routed off this source captures together.
-    </p>
-  </div>
+    </template>
+
+    <template #node-body="{ node }">
+      <div v-if="node.groups.length === 0" class="oal__empty">
+        no source rows captured on this node
+      </div>
+      <div v-else class="oal__groups">
+        <article v-for="g in node.groups" :key="g.index" class="oal__group">
+          <header class="oal__grouph">
+            <span class="oal__groupid">source row #{{ g.index }}</span>
+          </header>
+          <table class="oal__waterfall">
+            <thead>
+              <tr>
+                <th class="oal__source">fragment</th>
+                <th class="oal__kind">stage</th>
+                <th class="oal__result">result</th>
+                <th class="oal__hash">hash</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, idx) in g.rows" :key="`${nodeKey(node)}-${g.index}-${idx}`">
+                <td class="oal__source"><code>{{ row.rec.sourceText }}</code></td>
+                <td class="oal__kind">
+                  <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
+                </td>
+                <td class="oal__result">
+                  <template v-if="row.source">
+                    <div><span class="oal__lbl">type</span> {{ row.source.type }}</div>
+                    <div v-if="row.source.scope !== undefined">
+                      <span class="oal__lbl">scope</span> {{ row.source.scope }}
+                    </div>
+                    <div v-if="row.source.extra?.kept !== undefined">
+                      <span class="oal__lbl">kept</span>
+                      <Pill :tone="row.source.extra.kept ? 'ok' : 'warn'">
+                        {{ row.source.extra.kept }}
+                      </Pill>
+                    </div>
+                  </template>
+                  <template v-else-if="row.metrics">
+                    <div><span class="oal__lbl">type</span> {{ row.metrics.type }}</div>
+                    <div>
+                      <span class="oal__lbl">timeBucket</span> {{ row.metrics.timeBucket }}
+                    </div>
+                  </template>
+                </td>
+                <td class="oal__hash">
+                  <code>{{ shortHash(row.rec.contentHash) }}</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+      </div>
+    </template>
+  </DebugView>
 </template>
 
 <style scoped>
-.oal {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
-.oal__controls {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.oal__field {
+.ctl {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.oal__label {
+.ctl__lbl {
   font-family: var(--rr-font-mono);
   font-size: 9.5px;
   letter-spacing: 1.1px;
@@ -318,12 +259,12 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   color: var(--rr-dim);
 }
 
-.oal__select {
+.ctl__select {
   min-width: 280px;
 }
 
-.oal__select,
-.oal__input {
+.ctl__select,
+.ctl__input {
   background: var(--rr-bg2);
   color: var(--rr-ink);
   border: 1px solid var(--rr-border);
@@ -332,27 +273,8 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   font-size: 12px;
 }
 
-.oal__input {
+.ctl__input {
   width: 90px;
-}
-
-.oal__statepill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-}
-
-.oal__sid {
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.oal__sid2 {
-  font-family: var(--rr-font-mono);
-  color: var(--rr-heading);
-  font-size: 12px;
 }
 
 .oal__error {
@@ -405,48 +327,7 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   background: var(--rr-bg);
 }
 
-.oal__capture {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  padding: 12px;
-}
-
-.oal__captureh {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.oal__node {
-  border: 1px solid var(--rr-border);
-}
-
-.oal__nodeh {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--rr-bg3);
-  border-bottom: 1px solid var(--rr-border);
-}
-
-.oal__nodeid {
-  font-family: var(--rr-font-mono);
-  font-size: 12px;
-  color: var(--rr-heading);
-}
-
-.oal__bytes {
-  margin-left: auto;
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.oal__nodeempty {
+.oal__empty {
   padding: 14px;
   font-size: 11.5px;
   color: var(--rr-dim);
@@ -539,14 +420,5 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
   font-family: var(--rr-font-mono);
   font-size: 11px;
   color: var(--rr-dim);
-}
-
-.oal__hint {
-  padding: 14px 18px;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  color: var(--rr-dim);
-  font-size: 12px;
-  margin: 0;
 }
 </style>
