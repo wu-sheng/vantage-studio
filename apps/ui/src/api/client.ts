@@ -96,6 +96,32 @@ function isApiError(v: unknown): v is BffApiError {
   return typeof v === 'object' && v !== null && 'status' in v && 'body' in v;
 }
 
+/**
+ * Mid-session 401 handler — wired once at app boot via `setOn401`.
+ * Every `/api/*` request that 401s outside the auth routes invokes
+ * this. The intended behavior is to clear the auth store and bounce
+ * the user to /login with a `redirect=...` query so they end up back
+ * where they were after re-login.
+ *
+ * Auth routes (`/api/auth/login` and `/api/auth/me`) intentionally
+ * bypass this — login itself can legitimately return 401 (bad creds),
+ * and `me()` is the bootstrap probe that already returns null on 401.
+ */
+let on401Handler: (() => void) | null = null;
+
+export function setOn401(fn: () => void): void {
+  on401Handler = fn;
+}
+
+/** Internal — exposed only for tests; production code uses `setOn401`. */
+export function _resetOn401Handler(): void {
+  on401Handler = null;
+}
+
+function isAuthRoute(path: string): boolean {
+  return path === '/api/auth/login' || path === '/api/auth/me';
+}
+
 export class BffClient {
   constructor(private readonly base: string = '') {}
 
@@ -150,6 +176,9 @@ export class BffClient {
       credentials: 'include',
       headers: { Accept: 'application/x-yaml' },
     });
+    if (res.status === 401 && !isAuthRoute(path) && on401Handler !== null) {
+      on401Handler();
+    }
     if (res.status === 404) return null;
     if (!res.ok) throw await this.toError(res);
     const content = await res.text();
@@ -177,12 +206,16 @@ export class BffClient {
     });
     if (args.allowStorageChange) params.set('allowStorageChange', 'true');
     if (args.force) params.set('force', 'true');
-    const res = await fetch(`${this.base}/api/rule?${params.toString()}`, {
+    const path = `/api/rule?${params.toString()}`;
+    const res = await fetch(`${this.base}${path}`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'text/plain' },
       body: args.body,
     });
+    if (res.status === 401 && !isAuthRoute('/api/rule') && on401Handler !== null) {
+      on401Handler();
+    }
     if (!res.ok) throw await this.toError(res);
     return (await res.json()) as ApplyResult;
   }
@@ -314,11 +347,14 @@ export class BffClient {
   }
 
   private async toError(res: Response): Promise<BffApiError> {
-    let parsed: unknown;
-    try {
-      parsed = await res.json();
-    } catch {
-      parsed = await res.text();
+    const text = await res.text();
+    let parsed: unknown = text;
+    if (text.length > 0) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // not JSON — keep the raw text body.
+      }
     }
     return { status: res.status, body: parsed };
   }
@@ -331,15 +367,24 @@ export class BffClient {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     };
     const res = await fetch(this.base + path, init);
+    if (res.status === 401 && !isAuthRoute(path) && on401Handler !== null) {
+      on401Handler();
+    }
     if (res.status === 204) {
       return undefined as T;
     }
     if (!res.ok) {
-      let parsed: unknown;
-      try {
-        parsed = await res.json();
-      } catch {
-        parsed = await res.text();
+      // Read the body as text first; the body stream is single-use,
+      // so trying .json() then falling back to .text() blows up when
+      // .json() consumes the stream on parse failure.
+      const text = await res.text();
+      let parsed: unknown = text;
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          // not JSON — keep the raw text body.
+        }
       }
       const err: BffApiError = { status: res.status, body: parsed };
       throw err;

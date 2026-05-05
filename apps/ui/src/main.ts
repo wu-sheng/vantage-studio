@@ -19,6 +19,8 @@ import { createPinia } from 'pinia';
 import { VueQueryPlugin, QueryClient } from '@tanstack/vue-query';
 import App from './App.vue';
 import { router } from './router.js';
+import { setOn401 } from './api/client.js';
+import { useAuthStore } from './stores/auth.js';
 
 import '@vantage-studio/design-tokens/tokens.css';
 import './styles/global.css';
@@ -40,4 +42,32 @@ const app = createApp(App);
 app.use(createPinia());
 app.use(router);
 app.use(VueQueryPlugin, { queryClient });
+
+/**
+ * Mid-session 401 → reset auth + redirect to /login. Idempotent —
+ * concurrent 401s on parallel requests should only redirect once. We
+ * use a dedupe flag and `window.location.assign` (not router.push) so
+ * the entire app state — vue-query cache, debug-session pollers,
+ * pinia stores — is fully reset and there's no chance of stale data
+ * flashing into the next session.
+ */
+let redirecting = false;
+setOn401(() => {
+  if (redirecting) return;
+  redirecting = true;
+  try {
+    const auth = useAuthStore();
+    auth.user = null;
+  } catch {
+    // Pinia not yet active during very-early-boot 401; ignore.
+  }
+  if (window.location.pathname === '/login') {
+    redirecting = false;
+    return;
+  }
+  const redirectQs =
+    encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.assign(`/login?redirect=${redirectQs}`);
+});
+
 app.mount('#app');
