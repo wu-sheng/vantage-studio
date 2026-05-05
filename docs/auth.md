@@ -73,6 +73,7 @@ rbac:
         - rule:write
         - rule:write:structural
         - rule:delete
+        - rule:debug
         - cluster:read
     viewer:
       verbs:

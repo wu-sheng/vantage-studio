@@ -108,3 +108,52 @@ Studio's default-delete button is just a button. The
 **revert-to-bundled** button (only shown when the rule has a bundled
 twin) opens the typed-name confirm with the upstream warning text —
 the only delete path that runs a schema change in v1.
+
+## Browse OAL rules (read-only)
+
+The **OAL catalog** page (left nav) lists every `.oal` file the OAP
+cluster has loaded plus every rule line within each file. Pure
+read-only — OAL hot-update is intentionally not in scope; Studio
+just surfaces what is loaded.
+
+For each file: name, path, rule count, status (`LOADED` /
+`DISABLED` / `COMPILE_FAILED`), and `contentHash`. For each rule:
+file, rule name, line, source scope, expression, function name,
+filters, and the persisted metric name. The `contentHash` is the
+same SHA-256 the live debugger stamps on captured records — UI
+matches captures to rule content via this hash.
+
+## Live debugger (MAL · LAL · OAL)
+
+The **Live debugger** page lets operators sample the actual data
+flowing through a rule's DSL pipeline on demand. Pick a rule, hit
+**Start sampling**, watch the per-stage capture render live as the
+window fills. The session auto-stops when its byte cap fires, its
+record cap fires, or the capture window elapses (default 60 s);
+operators can also stop manually.
+
+Three views, one per DSL:
+
+- **MAL** waterfall — 8 stages from `filter` (file-level) through
+  `meter_emit`. Each row pairs the verbatim DSL fragment
+  (`sourceText`) with the stage's result snapshot.
+- **LAL** records-as-columns × blocks-as-rows grid. The 5 fixed
+  blocks (`text` / `parser` / `extractor` / `sink` / `output_record`)
+  plus `output_metric` populate the rows. A **granularity** toggle
+  switches between block-level (default) and statement-level capture
+  for stepping through every DSL line in the extractor.
+- **OAL** waterfall — 5 clauses (`source` / `filter[i]` /
+  `build_metrics` / `aggregation` / `emit`). The `build_metrics` and
+  `emit` rows render with an `(implicit)` badge — they're compiler-
+  emitted boundaries, not user-written.
+
+Per-cluster coverage shows up as a strip above the capture: each
+peer's contribution (`ok` / `install_failed` / `timeout`). Captures
+during a hot-update show side-by-side YAML for each `contentHash`
+the session encountered, so operators see exactly which rule
+content emitted which record.
+
+The **Cluster status** page surfaces a per-node DSL-debugging health
+strip: whether bytecode probes are injected, how many sessions are
+active, and the active-session ceiling. Useful for confirming the
+feature is enabled on every node before opening a session.

@@ -41,7 +41,7 @@ rbac: # OPTIONAL — absent means everyone has full access
   enabled: true
   roles:
     admin: { verbs: ['*'] }
-    operator: { verbs: [rule:read, rule:write, rule:write:structural, rule:delete, cluster:read] }
+    operator: { verbs: [rule:read, rule:write, rule:write:structural, rule:delete, rule:debug, cluster:read] }
     viewer: { verbs: [rule:read, cluster:read] }
 
 session:
@@ -66,8 +66,14 @@ audit:
 
 | Field       | Required | Notes                                                                                                                                                                                                                                                                                    |
 | ----------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adminUrls` | yes      | Array of base URLs to OAP's runtime-rule admin port (default `17128`). The BFF fans `/runtime/rule/list` out across every URL when computing the cluster matrix. **Writes** (`addOrUpdate`, `inactivate`, `delete`) hit only the first URL — OAP's forward-RPC handles peer convergence. |
+| `adminUrls` | yes      | Array of base URLs to OAP's `admin-server` (default port `17128` — same port runtime-rule used standalone before SWIP-13). The BFF fans `/runtime/rule/list` out across every URL for the cluster matrix and fans `/dsl-debugging/status` for the debugger health pane. **Writes** (`addOrUpdate`, `inactivate`, `delete`) hit only the first URL — OAP's forward-RPC handles peer convergence. **Live debugger** session installs hit the first URL too; OAP itself broadcasts `InstallDebugSession` cluster-wide. |
 | `statusUrl` | yes      | OAP query/status plugin URL (default `12800`). Used for `/status/cluster/nodes` lookups.                                                                                                                                                                                                 |
+
+> **OAP-side opt-in.** The admin-server, runtime-rule, and dsl-debugging
+> selectors all default to empty on OAP. Set
+> `SW_ADMIN_SERVER=default`, `SW_RECEIVER_RUNTIME_RULE=default`, and
+> `SW_DSL_DEBUGGING=default` on the OAP container so the URLs Studio
+> calls actually exist. See [`install.md`](install.md) for details.
 
 ### `auth`
 
@@ -99,16 +105,17 @@ Verb table:
 
 | Verb                    | Routes it gates                                                                        |
 | ----------------------- | -------------------------------------------------------------------------------------- |
-| `rule:read`             | catalog browse, single-rule fetch, dump                                                |
+| `rule:read`             | catalog browse, single-rule fetch, dump, OAL catalog browse                            |
 | `rule:write`            | `addOrUpdate` (filter-only), `inactivate`                                              |
 | `rule:write:structural` | `addOrUpdate` with `allowStorageChange=true` or `force=true`; `revertToBundled` delete |
 | `rule:delete`           | `delete` (default mode)                                                                |
-| `cluster:read`          | cluster matrix                                                                         |
+| `rule:debug`            | live debugger — start / poll / stop debug sessions across MAL / LAL / OAL              |
+| `cluster:read`          | cluster matrix, dsl-debugging status pane                                              |
 | `admin`                 | (reserved — audit-read in a later release)                                             |
 | `*`                     | all of the above                                                                       |
 
-Two more verbs (`rule:debug`, `rule:rollback`) are reserved for the
-deferred debugger and history surfaces; they have no current effect.
+One more verb (`rule:rollback`) is reserved for the deferred history
+surface; it has no current effect.
 
 ### `session`
 

@@ -42,15 +42,37 @@ Visit <http://localhost:8080> and log in:
 `docker compose down --volumes` (or `make compose-down`) wipes the
 state.
 
-### Image expectation: `apache/skywalking-oap-server:runtime-rule`
+### Image expectation: `apache/skywalking-oap-server:admin-server`
 
-The runtime-rule receiver feature lives on the upstream
-`feature/runtime-rule-hot-update` branch and isn't in a tagged release
-yet. For the compose stack to find the runtime-rule endpoints, you
-need an OAP build of that branch tagged locally as
-`apache/skywalking-oap-server:runtime-rule`. Build it from a checkout
-of `apache/skywalking` (`./mvnw … && docker build …`), or pull from
-your own CI registry.
+Studio binds to the **admin-server** module introduced by
+[SWIP-13](https://github.com/apache/skywalking/blob/main/docs/en/swip/SWIP-13.md)
+— a shared HTTP server (port `17128`) that hosts the runtime-rule
+plugin's REST surface alongside OAL listing and the DSL live
+debugger. The SWIP isn't in a tagged release yet, so the compose
+stack expects an OAP image tagged locally as
+`apache/skywalking-oap-server:admin-server` built from the SWIP-13
+branch. Build it from a checkout of `apache/skywalking`
+(`./mvnw … && docker build …`), or pull from your own CI registry.
+
+### OAP enablement — three opt-in selectors
+
+All three SWIP-13 selectors default to **empty (disabled)**. Set
+the following env vars on the OAP container so the surfaces Studio
+needs come up:
+
+```env
+SW_ADMIN_SERVER=default          # shared HTTP server on :17128
+SW_RECEIVER_RUNTIME_RULE=default # /runtime/rule/* + /runtime/oal/*
+SW_DSL_DEBUGGING=default         # /dsl-debugging/* live debugger
+```
+
+If a feature is enabled without `admin-server`, OAP fails fast at
+boot via the standard `requiredModules()` mechanism with a
+`ModuleNotFoundException: admin-server`. Set all three together.
+
+> The admin-server has **no authentication** in this release. Reach
+> it only over the cluster's private network — never expose port
+> `17128` to the public internet.
 
 ## Production install
 
@@ -96,5 +118,6 @@ Deferred to a follow-up release. Until then, the Docker image works
 in a `Deployment` + `Service` + `PersistentVolumeClaim` of your own.
 A `NetworkPolicy` denying everything except the Studio pod from
 reaching the OAP admin port (`17128`) is recommended — Studio is the
-only authenticated client; the OAP runtime-rule API has no auth of
-its own.
+only authenticated client; the OAP admin-server has no auth of its
+own. The same NetworkPolicy applies to all admin-server-hosted
+surfaces (`/runtime/rule/*`, `/runtime/oal/*`, `/dsl-debugging/*`).
