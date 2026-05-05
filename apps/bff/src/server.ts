@@ -31,6 +31,7 @@ import type { AuditLogger } from './audit/logger.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import type { VerifyDeps } from './auth/local.js';
 import { registerOapRoutes } from './oap/routes.js';
+import { registerDebugRoutes } from './oap/debug-routes.js';
 
 export interface BuildServerOptions {
   config: ConfigHandle;
@@ -84,6 +85,13 @@ export async function buildServer(opts: BuildServerOptions): Promise<BuiltServer
   });
 
   registerOapRoutes(app, {
+    config: opts.config,
+    sessions,
+    audit: opts.audit,
+    ...(opts.oapFetch !== undefined ? { fetch: opts.oapFetch } : {}),
+  });
+
+  registerDebugRoutes(app, {
     config: opts.config,
     sessions,
     audit: opts.audit,

@@ -34,7 +34,16 @@ const verbs: VerbRow[] = [
     notes: 'gates every schema-change destructive path',
   },
   { verb: 'rule:delete', surface: '/rule/delete', notes: 'default delete is non-destructive' },
-  { verb: 'cluster:read', surface: '/cluster/state matrix', notes: '—' },
+  {
+    verb: 'rule:debug',
+    surface: 'live debugger — start/poll/stop debug sessions across MAL/LAL/OAL',
+    notes: 'session traffic flows through capture probes; gateway-protect',
+  },
+  {
+    verb: 'cluster:read',
+    surface: '/cluster/state matrix, /debug/status pane',
+    notes: '—',
+  },
   { verb: 'admin', surface: 'audit read', notes: '—' },
 ];
 

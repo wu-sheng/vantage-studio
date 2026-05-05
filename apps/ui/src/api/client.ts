@@ -24,10 +24,12 @@
  */
 
 import type {
+  ActiveSessionRow,
   ApplyResult,
   BundledEntry,
   Catalog,
   DeleteMode,
+  DslDebuggingStatus,
   ListEnvelope,
   LocalState,
   OalFileDetail,
@@ -36,7 +38,20 @@ import type {
   RuleResponse,
   RuleSource,
   RuleStatus,
+  SessionResponse,
+  StartSessionArgs,
+  StartSessionResponse,
 } from '@vantage-studio/api-client';
+
+/**
+ * BFF-only response shape for `/api/debug/status` — per-cluster
+ * fan-out of `/dsl-debugging/status`. Kept in sync with
+ * `apps/bff/src/oap/debug-routes.ts`.
+ */
+export interface ClusterDebugStatus {
+  generatedAt: number;
+  nodes: { url: string; ok: boolean; status?: DslDebuggingStatus; error?: string }[];
+}
 
 /**
  * BFF-only response shape for `/api/cluster/state`. Kept in sync by
@@ -235,6 +250,48 @@ export class BffClient {
       if (isApiError(err) && err.status === 404) return null;
       throw err;
     }
+  }
+
+  // ── DSL live debugger (SWIP-13 §4.2) ─────────────────────────────
+
+  /** `POST /api/debug/session` — start a debug session. The backend
+   *  broadcasts a cluster-scope `StopByClientId` for the supplied
+   *  `clientId` before allocating, so a new POST under the same
+   *  clientId always replaces any prior session. Returns the
+   *  allocated `sessionId` plus per-peer install acks. */
+  async debugStart(args: StartSessionArgs): Promise<StartSessionResponse> {
+    return this.request<StartSessionResponse>('POST', '/api/debug/session', args);
+  }
+
+  /** `GET /api/debug/session/{id}` — poll. Returns `null` on 404
+   *  (session expired). */
+  async debugSession(id: string): Promise<SessionResponse | null> {
+    try {
+      return await this.request<SessionResponse>(
+        'GET',
+        `/api/debug/session/${encodeURIComponent(id)}`,
+      );
+    } catch (err) {
+      if (isApiError(err) && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** `POST /api/debug/session/{id}/stop` — idempotent. */
+  async debugStop(id: string): Promise<void> {
+    await this.request<void>('POST', `/api/debug/session/${encodeURIComponent(id)}/stop`);
+  }
+
+  /** `GET /api/debug/sessions` — active sessions across the
+   *  cluster. */
+  async debugSessions(): Promise<ActiveSessionRow[]> {
+    return this.request<ActiveSessionRow[]>('GET', '/api/debug/sessions');
+  }
+
+  /** `GET /api/debug/status` — per-node DSL-debugging health
+   *  snapshot (BFF fan-out). */
+  async debugStatus(): Promise<ClusterDebugStatus> {
+    return this.request<ClusterDebugStatus>('GET', '/api/debug/status');
   }
 
   /** Trigger a `/api/dump[/{catalog}]` download. Uses an invisible

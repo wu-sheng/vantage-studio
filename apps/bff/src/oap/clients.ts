@@ -22,6 +22,7 @@
  */
 
 import {
+  DslDebuggingClient,
   OalClient,
   RuntimeRuleClient,
   StatusClient,
@@ -44,6 +45,13 @@ export interface OapClients {
    *  binary-version drift, which is operator deployment discipline);
    *  the BFF doesn't fan-out for the catalog browse. */
   oal(): OalClient;
+  /** DSL-debugging client for the *first* admin URL. Session install
+   *  and collect both fan-out internally on the OAP side; Studio
+   *  hits one node and lets OAP do the cluster work. */
+  debug(): DslDebuggingClient;
+  /** Build a DSL-debugging client for one specific admin URL — used
+   *  by the per-node fan-out for `/dsl-debugging/status`. */
+  debugForUrl(adminUrl: string): DslDebuggingClient;
   /** All admin URLs, in config order. */
   adminUrls(): readonly string[];
 }
@@ -70,6 +78,12 @@ export function buildOapClients(
     },
     oal(): OalClient {
       return new OalClient({ adminUrl: primaryUrl, fetch });
+    },
+    debug(): DslDebuggingClient {
+      return new DslDebuggingClient({ adminUrl: primaryUrl, fetch });
+    },
+    debugForUrl(adminUrl: string): DslDebuggingClient {
+      return new DslDebuggingClient({ adminUrl, fetch });
     },
     adminUrls(): readonly string[] {
       return config.oap.adminUrls;
