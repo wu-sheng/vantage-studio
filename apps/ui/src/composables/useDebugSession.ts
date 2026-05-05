@@ -41,7 +41,7 @@ import type {
   SessionResponse,
   StartSessionArgs,
 } from '@vantage-studio/api-client';
-import { bff } from '../api/client.js';
+import { bff, describeApiError } from '../api/client.js';
 import { getClientId } from './useClientId.js';
 
 export type DebugWidgetKey = 'mal' | 'lal' | 'oal';
@@ -178,7 +178,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
         schedulePoll(POLL_INTERVAL_MS * (pollFailures + 1));
         return;
       }
-      error.value = err instanceof Error ? err.message : describeError(err);
+      error.value = describeApiError(err);
       state.value = 'error';
       clearTimer();
     }
@@ -205,7 +205,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
       // First poll immediately so the operator sees something fast.
       void poll(pollGeneration);
     } catch (err) {
-      error.value = err instanceof Error ? err.message : describeError(err);
+      error.value = describeApiError(err);
       state.value = 'error';
     }
   }
@@ -230,7 +230,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
         // ignore — stop already succeeded.
       }
     } catch (err) {
-      error.value = err instanceof Error ? err.message : describeError(err);
+      error.value = describeApiError(err);
       state.value = 'error';
     }
   }
@@ -272,19 +272,4 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     start,
     stop,
   };
-}
-
-function describeError(err: unknown): string {
-  if (typeof err === 'object' && err !== null && 'status' in err) {
-    const e = err as { status: number; body: unknown };
-    if (typeof e.body === 'object' && e.body !== null) {
-      const o = e.body as Record<string, unknown>;
-      if (typeof o.code === 'string' && typeof o.message === 'string') {
-        return `${e.status} (${o.code}): ${o.message}`;
-      }
-      if (typeof o.message === 'string') return `${e.status}: ${o.message}`;
-    }
-    return `HTTP ${e.status}`;
-  }
-  return String(err);
 }

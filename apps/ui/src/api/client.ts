@@ -96,6 +96,35 @@ function isApiError(v: unknown): v is BffApiError {
   return typeof v === 'object' && v !== null && 'status' in v && 'body' in v;
 }
 
+/** Reduce an unknown thrown value to a short user-facing string. Knows
+ *  the BffApiError envelope (status / body) AND the upstream
+ *  `{ status: 'error', code, message }` shape that surfaces through
+ *  it. Used by composables that want to display poll / start failures
+ *  without each one re-implementing the decoder. */
+export function describeApiError(err: unknown): string {
+  if (typeof err === 'object' && err !== null && 'status' in err && 'body' in err) {
+    const e = err as BffApiError;
+    if (typeof e.body === 'object' && e.body !== null) {
+      const o = e.body as Record<string, unknown>;
+      if (typeof o.code === 'string' && typeof o.message === 'string') {
+        return `${e.status} (${o.code}): ${o.message}`;
+      }
+      if (typeof o.message === 'string') {
+        return `${e.status}: ${o.message}`;
+      }
+      if (typeof o.applyStatus === 'string') {
+        return `${e.status} (${o.applyStatus})`;
+      }
+    }
+    if (typeof e.body === 'string' && e.body.length > 0) {
+      return `${e.status}: ${e.body}`;
+    }
+    return `HTTP ${e.status}`;
+  }
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 /**
  * Mid-session 401 handler — wired once at app boot via `setOn401`.
  * Every `/api/*` request that 401s outside the auth routes invokes

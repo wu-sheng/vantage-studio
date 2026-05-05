@@ -35,7 +35,7 @@ import { useDebugSession } from '../../composables/useDebugSession.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
-import { isLalPayload, isLalRecord, shortHash } from './payload.js';
+import { isLalPayload, isLalRecord, shortHash, stageTone } from './payload.js';
 
 const dbg = useDebugSession('lal');
 const selectedRule = ref<string>('');
@@ -107,23 +107,6 @@ const nodeViews = computed<LalNodeView[]>(() => {
     return { ...n, rows };
   });
 });
-
-function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
-  switch (stage) {
-    case 'text':
-      return 'ok';
-    case 'parser':
-    case 'extractor':
-      return 'info';
-    case 'outputRecord':
-    case 'outputMetric':
-      return 'active';
-    case 'line':
-      return 'warn';
-    default:
-      return 'dim';
-  }
-}
 
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';

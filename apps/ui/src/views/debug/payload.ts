@@ -103,3 +103,39 @@ export function shortHash(h: string | undefined | null): string {
   if (!h) return '—';
   return h.slice(0, 8);
 }
+
+/**
+ * Pill tone for a stage badge. Centralised across MAL / LAL / OAL
+ * views so a tone tweak lands in one place.
+ *
+ * Tones reflect pipeline progression: `source`/`input`/`text` are the
+ * entry points (ok); `filter` is the gate (warn); transforms /
+ * builders are info; the L1-bound terminal stages
+ * (`meterEmit`/`emit`/`outputRecord`/`outputMetric`) are active so
+ * operators eyes catch them; LAL `line` is warn (statement-mode
+ * burns the record cap fast).
+ */
+export function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
+  switch (stage) {
+    case 'meterEmit':
+    case 'emit':
+    case 'outputRecord':
+    case 'outputMetric':
+      return 'active';
+    case 'meterBuild':
+    case 'build':
+    case 'aggregation':
+    case 'parser':
+    case 'extractor':
+      return 'info';
+    case 'filter':
+    case 'line':
+      return 'warn';
+    case 'input':
+    case 'source':
+    case 'text':
+      return 'ok';
+    default:
+      return 'dim';
+  }
+}

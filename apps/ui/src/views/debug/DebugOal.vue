@@ -37,6 +37,7 @@ import {
   isOalRecord,
   isOalSourcePayload,
   shortHash,
+  stageTone,
 } from './payload.js';
 
 const dbg = useDebugSession('oal');
@@ -118,22 +119,6 @@ const nodeViews = computed<OalNodeView[]>(() => {
     return { ...n, groups };
   });
 });
-
-function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
-  switch (stage) {
-    case 'emit':
-      return 'active';
-    case 'aggregation':
-    case 'build':
-      return 'info';
-    case 'filter':
-      return 'warn';
-    case 'source':
-      return 'ok';
-    default:
-      return 'dim';
-  }
-}
 
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';

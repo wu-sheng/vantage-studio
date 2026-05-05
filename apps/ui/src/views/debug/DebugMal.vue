@@ -40,6 +40,7 @@ import {
   isMalRecord,
   isMalSamplesPayload,
   shortHash,
+  stageTone,
 } from './payload.js';
 
 interface RuleOption {
@@ -130,21 +131,6 @@ const nodeViews = computed<MalNodeView[]>(() => {
     return { ...n, rows };
   });
 });
-
-function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
-  switch (stage) {
-    case 'meterEmit':
-      return 'active';
-    case 'meterBuild':
-      return 'info';
-    case 'filter':
-      return 'warn';
-    case 'input':
-      return 'ok';
-    default:
-      return 'dim';
-  }
-}
 
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
