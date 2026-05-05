@@ -90,9 +90,18 @@ const sections: NavSection[] = [
     ],
   },
   {
+    kicker: 'live debugger',
+    links: [
+      {
+        label: 'Live debugger',
+        to: '/debug',
+        active: (p) => p.startsWith('/debug'),
+      },
+    ],
+  },
+  {
     kicker: 'deferred',
     links: [
-      { label: 'Live debugger', hint: 'next commit', disabled: true },
       { label: 'History · diff · rollback', hint: 'later release', disabled: true },
     ],
   },

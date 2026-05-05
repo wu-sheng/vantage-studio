@@ -66,6 +66,12 @@ const routes: RouteRecordRaw[] = [
     meta: { layout: 'main', requiresAuth: true },
   },
   {
+    path: '/debug',
+    name: 'live-debugger',
+    component: () => import('./views/LiveDebugger.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('./views/NotFound.vue'),
