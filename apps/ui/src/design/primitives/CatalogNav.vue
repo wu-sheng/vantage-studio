@@ -48,6 +48,11 @@ const sections: NavSection[] = [
         active: (p) => p.startsWith('/catalog/log-mal-rules'),
       },
       {
+        label: 'MAL · Telegraf',
+        to: '/catalog/telegraf-rules',
+        active: (p) => p.startsWith('/catalog/telegraf-rules'),
+      },
+      {
         label: 'LAL',
         to: '/catalog/lal',
         active: (p) => p.startsWith('/catalog/lal'),

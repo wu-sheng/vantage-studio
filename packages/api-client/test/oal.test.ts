@@ -18,15 +18,23 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   OalClient,
   RuntimeRuleApiError,
-  type OalFileDetail,
-  type OalFileListing,
-  type OalRuleSnapshot,
+  type OalFilesResponse,
+  type OalRulesResponse,
+  type OalSourceDetail,
 } from '../src/index.js';
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
+    ...init,
+  });
+}
+
+function textResponse(body: string, init?: ResponseInit): Response {
+  return new Response(body, {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     ...init,
   });
 }
@@ -46,109 +54,93 @@ function makeFakeFetch(...responses: Response[]) {
   return { fn, calls };
 }
 
-const sampleFiles: OalFileListing[] = [
-  {
-    name: 'core',
-    path: 'core.oal',
-    ruleCount: 86,
-    status: 'LOADED',
-    contentHash: '8a21f000aaaa',
-  },
-  {
-    name: 'browser',
-    path: 'browser.oal',
-    ruleCount: 14,
-    status: 'LOADED',
-    contentHash: '5e1c44ddee',
-  },
-];
-
-const sampleRule: OalRuleSnapshot = {
-  file: 'core',
-  ruleName: 'endpoint_cpm',
-  line: 14,
-  sourceScope: 'Endpoint',
-  expression: 'endpoint_cpm = from(Endpoint.*).cpm();',
-  function: 'cpm',
-  filters: [],
-  persistedMetricName: 'endpoint_cpm',
-  contentHash: '8a21f000aaaa',
+const sampleFiles: OalFilesResponse = {
+  files: ['core.oal', 'browser.oal'],
+  count: 2,
 };
 
-const sampleFileDetail: OalFileDetail = {
-  name: 'core',
-  path: 'core.oal',
-  content: 'endpoint_cpm = from(Endpoint.*).cpm();\n',
-  rules: [sampleRule],
-  status: 'LOADED',
-  contentHash: '8a21f000aaaa',
+const sampleRules: OalRulesResponse = {
+  sources: [
+    {
+      source: 'Endpoint',
+      dispatcher: 'org.apache.skywalking.oap.server.core.source.EndpointDispatcher',
+      metrics: ['endpoint_cpm', 'endpoint_sla'],
+    },
+  ],
+  count: 1,
+};
+
+const sampleDetail: OalSourceDetail = {
+  source: 'Endpoint',
+  dispatcher: 'org.apache.skywalking.oap.server.core.source.EndpointDispatcher',
+  status: 'live',
+  metrics: ['endpoint_cpm', 'endpoint_sla'],
 };
 
 describe('OalClient', () => {
-  it('listFiles hits /runtime/oal/files and returns the array', async () => {
+  it('listFiles hits /runtime/oal/files and returns the JSON envelope', async () => {
     const { fn, calls } = makeFakeFetch(jsonResponse(sampleFiles));
     const client = new OalClient({ adminUrl: 'http://oap:17128', fetch: fn });
 
     const got = await client.listFiles();
 
-    expect(got).toHaveLength(2);
-    expect(got[0]!.name).toBe('core');
-    expect(got[0]!.contentHash).toBe('8a21f000aaaa');
+    expect(got.files).toHaveLength(2);
+    expect(got.files[0]).toBe('core.oal');
+    expect(got.count).toBe(2);
     expect(calls[0]!.url).toBe('http://oap:17128/runtime/oal/files');
     expect(calls[0]!.init.method).toBe('GET');
   });
 
-  it('getFile encodes the path segment and returns the detail', async () => {
-    const { fn, calls } = makeFakeFetch(jsonResponse(sampleFileDetail));
+  it('getFileContent fetches text/plain and returns the body string', async () => {
+    const { fn, calls } = makeFakeFetch(textResponse('// core.oal\nendpoint_cpm = ...\n'));
     const client = new OalClient({ adminUrl: 'http://oap:17128', fetch: fn });
 
-    const got = await client.getFile('core');
+    const got = await client.getFileContent('core.oal');
 
-    expect(got).not.toBeNull();
-    expect(got!.rules).toHaveLength(1);
-    expect(got!.rules[0]!.ruleName).toBe('endpoint_cpm');
-    expect(calls[0]!.url).toBe('http://oap:17128/runtime/oal/files/core');
+    expect(got).toBe('// core.oal\nendpoint_cpm = ...\n');
+    expect(calls[0]!.url).toBe('http://oap:17128/runtime/oal/files/core.oal');
   });
 
-  it('getFile returns null on 404', async () => {
-    const { fn } = makeFakeFetch(new Response('not_found', { status: 404 }));
+  it('getFileContent returns null on 404', async () => {
+    const { fn } = makeFakeFetch(new Response('not loaded', { status: 404 }));
     const client = new OalClient({ adminUrl: 'http://oap:17128', fetch: fn });
 
-    expect(await client.getFile('missing')).toBeNull();
+    expect(await client.getFileContent('missing.oal')).toBeNull();
   });
 
-  it('listRules hits /runtime/oal/rules', async () => {
-    const { fn, calls } = makeFakeFetch(jsonResponse([sampleRule]));
+  it('listSources hits /runtime/oal/rules and returns the per-dispatcher listing', async () => {
+    const { fn, calls } = makeFakeFetch(jsonResponse(sampleRules));
     const client = new OalClient({ adminUrl: 'http://oap:17128', fetch: fn });
 
-    const got = await client.listRules();
+    const got = await client.listSources();
 
-    expect(got).toHaveLength(1);
-    expect(got[0]!.contentHash).toBe('8a21f000aaaa');
+    expect(got.sources).toHaveLength(1);
+    expect(got.sources[0]!.source).toBe('Endpoint');
+    expect(got.sources[0]!.metrics).toEqual(['endpoint_cpm', 'endpoint_sla']);
     expect(calls[0]!.url).toBe('http://oap:17128/runtime/oal/rules');
   });
 
-  it('getRule encodes the rule-name path segment', async () => {
-    const { fn, calls } = makeFakeFetch(jsonResponse(sampleRule));
+  it('getSource encodes the path segment and returns the detail', async () => {
+    const { fn, calls } = makeFakeFetch(jsonResponse(sampleDetail));
     const client = new OalClient({ adminUrl: 'http://oap:17128', fetch: fn });
 
-    const got = await client.getRule('endpoint_cpm');
+    const got = await client.getSource('Endpoint');
 
     expect(got).not.toBeNull();
-    expect(got!.ruleName).toBe('endpoint_cpm');
-    expect(calls[0]!.url).toBe('http://oap:17128/runtime/oal/rules/endpoint_cpm');
+    expect(got!.status).toBe('live');
+    expect(calls[0]!.url).toBe('http://oap:17128/runtime/oal/rules/Endpoint');
   });
 
-  it('getRule returns null on 404', async () => {
-    const { fn } = makeFakeFetch(new Response('not_found', { status: 404 }));
+  it('getSource returns null on 404', async () => {
+    const { fn } = makeFakeFetch(new Response('not found', { status: 404 }));
     const client = new OalClient({ adminUrl: 'http://oap:17128', fetch: fn });
 
-    expect(await client.getRule('missing')).toBeNull();
+    expect(await client.getSource('Bogus')).toBeNull();
   });
 
   it('throws RuntimeRuleApiError for non-2xx, non-404 responses', async () => {
     const { fn } = makeFakeFetch(
-      new Response(JSON.stringify({ applyStatus: 'oap_unreachable', message: 'down' }), {
+      new Response(JSON.stringify({ status: 'error', code: 'oap_unreachable', message: 'down' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       }),

@@ -423,9 +423,20 @@ export class DslDebuggingClient {
     const text = await res.text();
     let parsed: ApplyResult | string = text;
     try {
-      const json = JSON.parse(text) as Partial<ApplyResult>;
+      const json = JSON.parse(text) as Record<string, unknown>;
+      // Accept either the legacy `{ applyStatus, message }` envelope
+      // (runtime-rule pipeline) or the new `{ status, code, message }`
+      // envelope (dsl-debugging / runtime-oal). The downstream
+      // `outcomeOf` helper switches on `code` or `applyStatus` so we
+      // pass the raw JSON through under the union type.
       if (typeof json.applyStatus === 'string' && typeof json.message === 'string') {
-        parsed = json as ApplyResult;
+        parsed = json as unknown as ApplyResult;
+      } else if (
+        json.status === 'error' &&
+        typeof json.code === 'string' &&
+        typeof json.message === 'string'
+      ) {
+        parsed = json as unknown as ApplyResult;
       }
     } catch {
       // not JSON; keep the raw text.

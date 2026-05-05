@@ -166,6 +166,9 @@ describe('OAP route — /api/catalog/list', () => {
   });
 
   it('rejects an invalid catalog with 400', async () => {
+    // `oal` is a valid *debug-session* catalog but not a valid
+    // *management* catalog — the runtime-rule plugin doesn't accept
+    // it. /api/catalog/* must reject it.
     ctx = await makeApp({});
     const r = await ctx.app.inject({
       method: 'GET',
@@ -535,35 +538,27 @@ describe('OAP route — /api/dump streaming', () => {
   });
 });
 
-describe('OAP route — /api/oal/* read-only browse (SWIP-13 §4.1)', () => {
+describe('OAP route — /api/oal/* read-only browse (actual wire shape)', () => {
   let ctx: Ctx;
 
   afterEach(async () => {
     await ctx.app.close();
   });
 
-  const sampleFiles = [
-    {
-      name: 'core',
-      path: 'core.oal',
-      ruleCount: 86,
-      status: 'LOADED',
-      contentHash: '8a21f0',
-    },
-  ];
-  const sampleRule = {
-    file: 'core',
-    ruleName: 'endpoint_cpm',
-    line: 14,
-    sourceScope: 'Endpoint',
-    expression: 'endpoint_cpm = from(Endpoint.*).cpm();',
-    function: 'cpm',
-    filters: [],
-    persistedMetricName: 'endpoint_cpm',
-    contentHash: '8a21f0',
+  const sampleFiles = { files: ['core.oal', 'browser.oal'], count: 2 };
+  const sampleSources = {
+    sources: [
+      {
+        source: 'Endpoint',
+        dispatcher: 'org.apache.skywalking.oap.server.core.source.EndpointDispatcher',
+        metrics: ['endpoint_cpm', 'endpoint_sla'],
+      },
+    ],
+    count: 1,
   };
+  const sampleSourceDetail = { ...sampleSources.sources[0]!, status: 'live' };
 
-  it('GET /api/oal/files proxies the listing', async () => {
+  it('GET /api/oal/files proxies the JSON envelope', async () => {
     ctx = await makeApp({ oalFiles: () => jsonResponse(sampleFiles) });
     const r = await ctx.app.inject({
       method: 'GET',
@@ -575,59 +570,62 @@ describe('OAP route — /api/oal/* read-only browse (SWIP-13 §4.1)', () => {
     expect(ctx.oapCalls[0]!.url).toBe('http://oap-1:17128/runtime/oal/files');
   });
 
-  it('GET /api/oal/files/{name} forwards 404 as 404', async () => {
-    ctx = await makeApp({ oalFile: () => new Response('not_found', { status: 404 }) });
+  it('GET /api/oal/files/{name} returns the raw .oal text as text/plain', async () => {
+    ctx = await makeApp({
+      oalFile: () =>
+        new Response('// raw oal content\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        }),
+    });
     const r = await ctx.app.inject({
       method: 'GET',
-      url: '/api/oal/files/missing',
+      url: '/api/oal/files/core.oal',
+      headers: { cookie: `sid=${ctx.sid}` },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-type']).toContain('text/plain');
+    expect(r.body).toBe('// raw oal content\n');
+  });
+
+  it('GET /api/oal/files/{name} forwards 404 as 404', async () => {
+    ctx = await makeApp({ oalFile: () => new Response('not loaded', { status: 404 }) });
+    const r = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/oal/files/missing.oal',
       headers: { cookie: `sid=${ctx.sid}` },
     });
     expect(r.statusCode).toBe(404);
   });
 
-  it('GET /api/oal/rules returns the flat list', async () => {
-    ctx = await makeApp({ oalRules: () => jsonResponse([sampleRule]) });
+  it('GET /api/oal/rules returns the per-dispatcher listing', async () => {
+    ctx = await makeApp({ oalRules: () => jsonResponse(sampleSources) });
     const r = await ctx.app.inject({
       method: 'GET',
       url: '/api/oal/rules',
       headers: { cookie: `sid=${ctx.sid}` },
     });
     expect(r.statusCode).toBe(200);
-    expect(r.json()).toEqual([sampleRule]);
+    expect(r.json()).toEqual(sampleSources);
     expect(ctx.oapCalls[0]!.url).toBe('http://oap-1:17128/runtime/oal/rules');
   });
 
-  it('GET /api/oal/rules/{name} returns the rule detail', async () => {
-    ctx = await makeApp({ oalRule: () => jsonResponse(sampleRule) });
+  it('GET /api/oal/rules/{source} returns the source detail', async () => {
+    ctx = await makeApp({ oalRule: () => jsonResponse(sampleSourceDetail) });
     const r = await ctx.app.inject({
       method: 'GET',
-      url: '/api/oal/rules/endpoint_cpm',
+      url: '/api/oal/rules/Endpoint',
       headers: { cookie: `sid=${ctx.sid}` },
     });
     expect(r.statusCode).toBe(200);
-    expect(r.json().ruleName).toBe('endpoint_cpm');
-    expect(ctx.oapCalls[0]!.url).toBe('http://oap-1:17128/runtime/oal/rules/endpoint_cpm');
+    expect(r.json().source).toBe('Endpoint');
+    expect(r.json().status).toBe('live');
+    expect(ctx.oapCalls[0]!.url).toBe('http://oap-1:17128/runtime/oal/rules/Endpoint');
   });
 
   it('GET /api/oal/* returns 401 without a session', async () => {
     ctx = await makeApp({});
     const r = await ctx.app.inject({ method: 'GET', url: '/api/oal/files' });
     expect(r.statusCode).toBe(401);
-  });
-
-  it('GET /api/oal/* gated by rule:read under RBAC', async () => {
-    // Login as a reader-less user — explicitly remove rule:read to
-    // verify the gate.
-    ctx = await makeApp(
-      { oalFiles: () => jsonResponse([]) },
-      { rbac: true },
-    );
-    // alice is admin — has *. Should still pass.
-    const r = await ctx.app.inject({
-      method: 'GET',
-      url: '/api/oal/files',
-      headers: { cookie: `sid=${ctx.sid}` },
-    });
-    expect(r.statusCode).toBe(200);
   });
 });

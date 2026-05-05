@@ -9,57 +9,53 @@
 -->
 <script setup lang="ts">
 /**
- * LAL live-debugger view — SWIP-13 §1 LAL section + §7 design.
+ * LAL live-debugger view.
  *
- * Layout:
- *   - rule picker fed from /runtime/rule/list?catalog=lal.
- *   - granularity toggle: block (default) | statement.
- *   - per-block sampling toggle (6 blocks; default all on).
- *   - capture controls: maxRecords, windowSec, Start/Stop.
- *   - cluster coverage strip.
- *   - records-as-columns × blocks-as-rows grid: each captured log
- *     record fills one column; rows are the 5 fixed blocks plus
- *     output_record + output_metric. In statement granularity the
- *     extractor block expands into per-line cells.
- *   - rule snapshots disclosure for cross-hot-update content.
+ * The actual wire (per `reference_swip13_actual_wire.md`) doesn't have a
+ * `granularity` request param or per-block `blocks?[]` toggle yet — the
+ * recorder emits stages directly: `text`, `parser`, `extractor`,
+ * `outputRecord`, `outputMetric`. The `line` stage exists in code but
+ * `LALDebugRecorderFactory` hard-codes statement-mode off, so it's
+ * unreachable from the wire today; we render it if it ever appears.
+ *
+ * Each LAL record's payload is `{ sourceLine, body: { aborted,
+ * hasOutput, hasParsed, extra: {...} } }`. There's no text/parsed/
+ * extracted/sink sub-objects, no `sink` stage at all. The view renders
+ * the source line gutter + booleans + per-stage extras, plus a
+ * per-record column grid so operators can see one log record's pipeline
+ * end-to-end.
+ *
+ * For LAL the `name` query param is the file name with extension
+ * (e.g. `default.yaml`), and `ruleName` is the rule within the file.
+ * `/runtime/rule/list?catalog=lal` returns rows where `name` is the
+ * rule name; we don't currently know the file mapping, so the picker
+ * prompts the operator for the file with extension (often the
+ * default `<ruleName>.yaml` works, but the upstream loader binds
+ * names directly).
  */
 import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import type {
-  LalBlock,
-  LalNodeSlice,
-  LalRecord,
+  LalPayload,
   ListEnvelope,
-  RuleSnapshot,
+  NodeSlice,
+  SessionRecord,
+  Stage,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import NodeCoverage from './NodeCoverage.vue';
-
-const ALL_BLOCKS: LalBlock[] = [
-  'text',
-  'parser',
-  'extractor',
-  'sink',
-  'output_record',
-  'output_metric',
-];
+import { isLalPayload, isLalRecord, shortHash } from './payload.js';
 
 const dbg = useDebugSession('lal');
-const selectedName = ref<string>('');
-const granularity = ref<'block' | 'statement'>('block');
-const blocks = ref<Record<LalBlock, boolean>>({
-  text: true,
-  parser: true,
-  extractor: true,
-  sink: true,
-  output_record: true,
-  output_metric: true,
-});
-const maxRecords = ref<number>(8);
-const windowSec = ref<number>(60);
+const selectedRule = ref<string>('');
+/** LAL's file naming isn't surfaced by /runtime/rule/list; default to
+ *  `<ruleName>.yaml` and let the operator override. */
+const fileName = ref<string>('');
+const recordCap = ref<number>(1000);
+const retentionMinutes = ref<number>(5);
 
 const listQuery = useQuery({
   queryKey: ['debug-lal/list'],
@@ -72,11 +68,20 @@ const ruleNames = computed<string[]>(() => {
   return env.rules.map((r) => r.name).sort((a, b) => a.localeCompare(b));
 });
 
+function onRuleChange(): void {
+  // Default the file name to `<ruleName>.yaml` whenever the rule
+  // changes; operator can edit if upstream uses a different binding.
+  if (selectedRule.value && !fileName.value) {
+    fileName.value = `${selectedRule.value}.yaml`;
+  }
+}
+
 const startEnabled = computed(() => {
   const s = dbg.state.value;
   return (
-    selectedName.value !== '' &&
-    (s === 'idle' || s === 'captured' || s === 'expired' || s === 'stopped' || s === 'error')
+    selectedRule.value !== '' &&
+    fileName.value !== '' &&
+    (s === 'idle' || s === 'captured' || s === 'stopped' || s === 'error')
   );
 });
 
@@ -85,121 +90,50 @@ const stopEnabled = computed(
 );
 
 async function startSampling(): Promise<void> {
-  if (!selectedName.value) return;
-  const enabledBlocks = ALL_BLOCKS.filter((b) => blocks.value[b]);
-  // Don't pass `blocks` when every block is on — server default
-  // captures all of them, and SWIP §1 specifies the default is "all
-  // 5 fixed blocks + 2 output emit points".
-  const blocksArg = enabledBlocks.length === ALL_BLOCKS.length ? undefined : enabledBlocks;
+  if (!selectedRule.value) return;
   await dbg.start({
     catalog: 'lal',
-    name: selectedName.value,
-    maxRecords: maxRecords.value,
-    windowSec: windowSec.value,
-    granularity: granularity.value,
-    ...(blocksArg !== undefined ? { blocks: blocksArg } : {}),
+    name: fileName.value,
+    ruleName: selectedRule.value,
+    recordCap: recordCap.value,
+    retentionMillis: retentionMinutes.value * 60 * 1000,
   });
 }
 
-const lalSession = computed(() => {
+interface LalNodeView extends NodeSlice {
+  lalRecords: SessionRecord[];
+}
+
+const nodeViews = computed<LalNodeView[]>(() => {
   const s = dbg.session.value;
-  return s && s.catalog === 'lal' ? s : null;
-});
-
-interface RowSpec {
-  key: string;
-  label: string;
-  kind: 'block' | 'statement';
-  block?: LalBlock;
-  /** When kind === 'statement', the source line. */
-  sourceLine?: number;
-}
-
-/** Build the row spec for the grid. In block mode it's the 6 fixed
- *  blocks. In statement mode we also splice in one row per unique
- *  (sourceLine) seen across statement-level records, sorted by
- *  line. */
-function buildRows(records: LalRecord[]): RowSpec[] {
-  const rows: RowSpec[] = ALL_BLOCKS.map((b) => ({
-    key: `block:${b}`,
-    label: b,
-    kind: 'block',
-    block: b,
-  }));
-  if (granularity.value === 'statement') {
-    const lines = new Set<number>();
-    for (const r of records) {
-      if (typeof r.sourceLine === 'number') lines.add(r.sourceLine);
-    }
-    const sortedLines = [...lines].sort((a, b) => a - b);
-    // Insert statement rows after the extractor block — that's the
-    // most common statement-level capture site per SWIP §1.
-    const extractorIdx = rows.findIndex((r) => r.block === 'extractor');
-    const insertAt = extractorIdx + 1;
-    const stmtRows: RowSpec[] = sortedLines.map((ln) => ({
-      key: `stmt:${ln}`,
-      label: `line ${ln}`,
-      kind: 'statement',
-      sourceLine: ln,
-    }));
-    rows.splice(insertAt, 0, ...stmtRows);
-  }
-  return rows;
-}
-
-/** The cell value to render for a given row × record. */
-function cellFor(row: RowSpec, rec: LalRecord): unknown {
-  if (row.kind === 'statement') {
-    return rec.sourceLine === row.sourceLine ? rec : null;
-  }
-  switch (row.block) {
-    case 'text':
-      return rec.text === undefined && rec.body_type === undefined
-        ? null
-        : { text: rec.text, body_type: rec.body_type };
-    case 'parser':
-      return rec.parsed ?? null;
-    case 'extractor':
-      return rec.extracted || rec.def_vars
-        ? { extracted: rec.extracted, def_vars: rec.def_vars }
-        : null;
-    case 'sink':
-      return rec.sink ?? null;
-    case 'output_record':
-      return rec.output_record ?? null;
-    case 'output_metric':
-      return rec.output_metric ?? null;
-  }
-  return null;
-}
-
-function describeCell(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return JSON.stringify(value, null, 2);
-}
-
-function sinkTone(rec: LalRecord): 'ok' | 'warn' | 'err' | 'dim' {
-  if (!rec.sink) return 'dim';
-  if (rec.sink.kept === true) return 'ok';
-  if (rec.sink.kept === false) return 'warn';
-  return 'dim';
-}
-
-const ruleSnapshotEntries = computed<[string, RuleSnapshot][]>(() => {
-  const s = lalSession.value;
   if (!s) return [];
-  return Object.entries(s.ruleSnapshots ?? {});
+  return s.nodes.map((n) => ({
+    ...n,
+    lalRecords: (n.records ?? []).filter(isLalRecord),
+  }));
 });
 
-function shortHash(h: string): string {
-  return h ? h.slice(0, 8) : '—';
+function asLal(rec: SessionRecord): LalPayload | null {
+  return isLalPayload(rec.payload) ? rec.payload : null;
 }
 
-function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] } {
-  const records = node.records ?? [];
-  return { rows: buildRows(records), records };
+function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
+  switch (stage) {
+    case 'text':
+      return 'ok';
+    case 'parser':
+      return 'info';
+    case 'extractor':
+      return 'info';
+    case 'outputRecord':
+      return 'active';
+    case 'outputMetric':
+      return 'active';
+    case 'line':
+      return 'warn';
+    default:
+      return 'dim';
+  }
 }
 </script>
 
@@ -208,44 +142,22 @@ function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] }
     <header class="lal__controls">
       <div class="lal__field">
         <label class="lal__label">rule</label>
-        <select v-model="selectedName" class="lal__select">
+        <select v-model="selectedRule" class="lal__select" @change="onRuleChange">
           <option value="" disabled>select a LAL rule…</option>
           <option v-for="n in ruleNames" :key="n" :value="n">{{ n }}</option>
         </select>
       </div>
       <div class="lal__field">
-        <label class="lal__label">granularity</label>
-        <div class="lal__toggle">
-          <button
-            type="button"
-            class="lal__pill"
-            :class="{ 'lal__pill--active': granularity === 'block' }"
-            @click="granularity = 'block'"
-          >block</button>
-          <button
-            type="button"
-            class="lal__pill"
-            :class="{ 'lal__pill--active': granularity === 'statement' }"
-            @click="granularity = 'statement'"
-          >statement</button>
-        </div>
+        <label class="lal__label">file (with extension)</label>
+        <input v-model="fileName" type="text" class="lal__input lal__input--wide" placeholder="default.yaml" />
       </div>
       <div class="lal__field">
-        <label class="lal__label">blocks</label>
-        <div class="lal__blocks">
-          <label v-for="b in ALL_BLOCKS" :key="b" class="lal__blockcheck">
-            <input type="checkbox" v-model="blocks[b]" />
-            <span>{{ b }}</span>
-          </label>
-        </div>
+        <label class="lal__label">recordCap</label>
+        <input v-model.number="recordCap" type="number" min="1" max="10000" class="lal__input" />
       </div>
       <div class="lal__field">
-        <label class="lal__label">maxRecords</label>
-        <input v-model.number="maxRecords" type="number" min="1" max="100" class="lal__input" />
-      </div>
-      <div class="lal__field">
-        <label class="lal__label">windowSec</label>
-        <input v-model.number="windowSec" type="number" min="1" max="600" class="lal__input" />
+        <label class="lal__label">retention (min)</label>
+        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="lal__input" />
       </div>
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
@@ -257,104 +169,88 @@ function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] }
       </span>
     </header>
 
-    <p v-if="granularity === 'statement'" class="lal__warn">
-      statement granularity captures one cell per meaningful DSL line —
-      a 12-statement extractor produces ~19 cells per record vs. 7 in
-      block mode. Drop maxRecords to ~3 to stay inside the per-session
-      byte cap.
-    </p>
-
     <p v-if="dbg.error.value" class="lal__error">{{ dbg.error.value }}</p>
 
     <NodeCoverage
-      v-if="dbg.peerAcks.value.length > 0 || (lalSession?.nodes?.length ?? 0) > 0"
+      v-if="dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0"
       :peer-acks="dbg.peerAcks.value"
-      :node-statuses="lalSession?.nodes ?? []"
-      :replaced-prior-ids="dbg.replacedPriorIds.value"
+      :node-statuses="dbg.session.value?.nodes ?? []"
+      :prior-cleanup="dbg.priorCleanup.value"
     />
 
-    <section v-if="lalSession" class="lal__capture">
+    <section v-if="dbg.session.value" class="lal__capture">
       <header class="lal__captureh">
-        <span class="lal__rulename">lal · {{ lalSession.name }}</span>
-        <Pill v-if="lalSession.granularity" tone="info">{{ lalSession.granularity }}</Pill>
-        <Pill v-if="lalSession.reason" :tone="lalSession.reason === 'manual_stop' ? 'dim' : 'info'">
-          {{ lalSession.reason }}
-        </Pill>
+        <span class="lal__sid2">session {{ dbg.session.value.sessionId }}</span>
       </header>
 
-      <div v-for="node in lalSession.nodes" :key="node.nodeId" class="lal__node">
+      <div v-for="node in nodeViews" :key="node.nodeId ?? node.peer ?? '?'" class="lal__node">
         <header class="lal__nodeh">
-          <span class="lal__nodeid">{{ node.nodeId }}</span>
-          <Pill :tone="node.status === 'ok' ? 'ok' : 'warn'">{{ node.status }}</Pill>
+          <span class="lal__nodeid">{{ node.nodeId ?? node.peer ?? '?' }}</span>
+          <Pill :tone="node.status === 'ok' ? 'ok' : node.status === 'captured' ? 'info' : 'warn'">
+            {{ node.status }}
+          </Pill>
+          <span v-if="node.totalBytes !== undefined" class="lal__bytes">
+            {{ node.totalBytes }} bytes
+          </span>
         </header>
 
-        <div v-if="!node.records || node.records.length === 0" class="lal__nodeempty">
-          no log records captured on this node
+        <div v-if="node.lalRecords.length === 0" class="lal__nodeempty">
+          no LAL records from this node
         </div>
 
-        <div v-else class="lal__gridwrap">
-          <table class="lal__grid">
-            <thead>
-              <tr>
-                <th class="lal__rowlabel">block</th>
-                <th
-                  v-for="(rec, idx) in node.records"
-                  :key="rec.id"
-                  class="lal__reccol"
-                >
-                  <div class="lal__rechead">
-                    <span class="lal__recid">#{{ idx + 1 }}</span>
-                    <span v-if="rec.svc" class="lal__recsvc">{{ rec.svc }}</span>
-                    <span v-if="rec.ts" class="lal__rects">{{ new Date(rec.ts).toLocaleTimeString() }}</span>
+        <table v-else class="lal__waterfall">
+          <thead>
+            <tr>
+              <th class="lal__line">ln</th>
+              <th class="lal__source">source</th>
+              <th class="lal__kind">stage</th>
+              <th class="lal__result">body summary</th>
+              <th class="lal__extra">extra</th>
+              <th class="lal__hash">hash</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(rec, idx) in node.lalRecords" :key="`${rec.stage}-${idx}-${rec.capturedAt}`">
+              <td class="lal__line">{{ asLal(rec)?.sourceLine ?? '—' }}</td>
+              <td class="lal__source"><code>{{ rec.sourceText }}</code></td>
+              <td class="lal__kind">
+                <Pill :tone="stageTone(rec.stage)">{{ rec.stage }}</Pill>
+              </td>
+              <td class="lal__result">
+                <template v-if="asLal(rec)">
+                  <div class="lal__flags">
+                    <span v-if="asLal(rec)!.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
+                    <span v-if="asLal(rec)!.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
+                    <span v-if="asLal(rec)!.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
                   </div>
-                  <div v-if="rec.sink" class="lal__recsink">
-                    <Pill :tone="sinkTone(rec)">{{ rec.sink.branch ?? 'sink' }} · {{ rec.sink.kept ? 'kept' : 'dropped' }}</Pill>
+                </template>
+              </td>
+              <td class="lal__extra">
+                <template v-if="asLal(rec)?.body.extra">
+                  <div v-if="asLal(rec)!.body.extra!.outputClass" class="lal__extraitem">
+                    <span class="lal__lbl">class</span>
+                    <code>{{ asLal(rec)!.body.extra!.outputClass }}</code>
                   </div>
-                  <code v-if="rec.contentHash" class="lal__rechash">{{ shortHash(rec.contentHash) }}</code>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in nodeRows(node).rows" :key="row.key">
-                <td class="lal__rowlabel">
-                  <Pill v-if="row.kind === 'block'" tone="dim">{{ row.label }}</Pill>
-                  <span v-else class="lal__stmtlabel">{{ row.label }}</span>
-                </td>
-                <td
-                  v-for="rec in node.records"
-                  :key="rec.id"
-                  class="lal__cell"
-                  :class="{ 'lal__cell--null': cellFor(row, rec) === null }"
-                >
-                  <pre v-if="cellFor(row, rec) !== null" class="lal__cellpre">{{ describeCell(cellFor(row, rec)) }}</pre>
-                  <span v-else class="lal__cellnull">·</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                  <div v-if="asLal(rec)!.body.extra!.samples !== undefined" class="lal__extraitem">
+                    <span class="lal__lbl">samples</span>
+                    {{ asLal(rec)!.body.extra!.samples }}
+                  </div>
+                </template>
+              </td>
+              <td class="lal__hash">
+                <code>{{ shortHash(rec.contentHash) }}</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-
-      <details v-if="ruleSnapshotEntries.length > 0" class="lal__snapshots">
-        <summary>
-          {{ ruleSnapshotEntries.length }} rule snapshot{{ ruleSnapshotEntries.length === 1 ? '' : 's' }}
-        </summary>
-        <div v-for="[hash, snap] in ruleSnapshotEntries" :key="hash" class="lal__snapshot">
-          <header>
-            <code>{{ shortHash(hash) }}</code>
-            <span v-if="snap.capturedFirstAt" class="lal__snapwhen">
-              first seen {{ new Date(snap.capturedFirstAt).toISOString() }}
-            </span>
-          </header>
-          <pre class="lal__snappre">{{ snap.content }}</pre>
-        </div>
-      </details>
     </section>
 
     <p v-else-if="dbg.state.value === 'idle'" class="lal__hint">
-      pick a LAL rule and hit start. each captured log record fills
-      one column; block rows show the parsed/extractor/sink/output
-      view, statement granularity adds one row per DSL line.
+      pick a LAL rule, set the file (typically <code>{ruleName}.yaml</code>),
+      hit start. each captured log record fills one row per probed stage —
+      the upstream emits text → parser → extractor → outputRecord /
+      outputMetric for kept records.
     </p>
   </div>
 </template>
@@ -408,40 +304,8 @@ function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] }
   width: 90px;
 }
 
-.lal__toggle {
-  display: inline-flex;
-  border: 1px solid var(--rr-border);
-}
-
-.lal__pill {
-  padding: 4px 10px;
-  background: var(--rr-bg2);
-  color: var(--rr-dim);
-  border: 0;
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.lal__pill--active {
-  background: var(--rr-bg3);
-  color: var(--rr-heading);
-}
-
-.lal__blocks {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.lal__blockcheck {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-ink2);
-  cursor: pointer;
+.lal__input--wide {
+  width: 200px;
 }
 
 .lal__statepill {
@@ -457,13 +321,10 @@ function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] }
   color: var(--rr-dim);
 }
 
-.lal__warn {
-  font-size: 11px;
-  color: var(--rr-warn, #d4a93b);
-  background: var(--rr-bg2);
-  padding: 6px 10px;
-  border-left: 2px solid var(--rr-warn, #d4a93b);
-  margin: 0;
+.lal__sid2 {
+  font-family: var(--rr-font-mono);
+  color: var(--rr-heading);
+  font-size: 12px;
 }
 
 .lal__error {
@@ -490,12 +351,6 @@ function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] }
   gap: 10px;
 }
 
-.lal__rulename {
-  font-family: var(--rr-font-mono);
-  color: var(--rr-heading);
-  font-size: 13px;
-}
-
 .lal__node {
   border: 1px solid var(--rr-border);
 }
@@ -515,105 +370,117 @@ function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] }
   color: var(--rr-heading);
 }
 
+.lal__bytes {
+  margin-left: auto;
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  color: var(--rr-dim);
+}
+
 .lal__nodeempty {
   padding: 14px;
+  font-size: 11.5px;
   color: var(--rr-dim);
   font-style: italic;
-  font-size: 11.5px;
 }
 
-.lal__gridwrap {
-  overflow-x: auto;
-}
-
-.lal__grid {
+.lal__waterfall {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11.5px;
-  table-layout: fixed;
+  font-size: 12px;
 }
 
-.lal__grid th,
-.lal__grid td {
-  border-bottom: 1px solid var(--rr-border);
-  border-right: 1px solid var(--rr-border);
+.lal__waterfall th,
+.lal__waterfall td {
   padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--rr-border);
   vertical-align: top;
 }
 
-.lal__rowlabel {
-  width: 110px;
-  text-align: left;
+.lal__waterfall th {
+  font-family: var(--rr-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
 }
 
-.lal__reccol {
-  min-width: 200px;
-  max-width: 320px;
-  text-align: left;
+.lal__line {
+  width: 36px;
+  font-family: var(--rr-font-mono);
+  color: var(--rr-dim);
 }
 
-.lal__rechead {
+.lal__source {
+  width: 140px;
+  font-family: var(--rr-font-mono);
+  color: var(--rr-ink2);
+}
+
+.lal__source code {
+  font-family: var(--rr-font-mono);
+  background: var(--rr-bg);
+  padding: 1px 4px;
+}
+
+.lal__kind {
+  width: 130px;
+}
+
+.lal__result {
+  font-family: var(--rr-font-mono);
+  font-size: 11.5px;
+}
+
+.lal__flags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lal__flag {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--rr-bg);
+  font-family: var(--rr-font-mono);
+  font-size: 10px;
+  color: var(--rr-ink2);
+}
+
+.lal__flag--ok {
+  color: var(--rr-ok, #5fa56f);
+}
+
+.lal__flag--warn {
+  color: var(--rr-warn, #d4a93b);
+}
+
+.lal__extra {
+  font-family: var(--rr-font-mono);
+  font-size: 11.5px;
+  color: var(--rr-ink2);
+}
+
+.lal__extraitem {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--rr-font-mono);
+}
+
+.lal__lbl {
+  color: var(--rr-dim);
   font-size: 10px;
-  color: var(--rr-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  min-width: 60px;
 }
 
-.lal__recid {
-  color: var(--rr-heading);
-  font-weight: 600;
-}
-
-.lal__recsvc {
-  color: var(--rr-ink2);
-}
-
-.lal__rects {
-  color: var(--rr-dim);
-}
-
-.lal__recsink {
-  margin-top: 3px;
-}
-
-.lal__rechash {
-  display: block;
-  margin-top: 3px;
-  font-family: var(--rr-font-mono);
-  color: var(--rr-dim);
-}
-
-.lal__cell {
-  background: var(--rr-bg);
-}
-
-.lal__cell--null {
-  background: var(--rr-bg2);
-  text-align: center;
-}
-
-.lal__cellpre {
-  margin: 0;
+.lal__hash {
+  width: 80px;
   font-family: var(--rr-font-mono);
   font-size: 11px;
-  color: var(--rr-ink2);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow: auto;
-}
-
-.lal__cellnull {
   color: var(--rr-dim);
-}
-
-.lal__stmtlabel {
-  font-family: var(--rr-font-mono);
-  font-size: 10.5px;
-  color: var(--rr-dim);
-  font-style: italic;
 }
 
 .lal__hint {
@@ -625,44 +492,9 @@ function nodeRows(node: LalNodeSlice): { rows: RowSpec[]; records: LalRecord[] }
   margin: 0;
 }
 
-.lal__snapshots {
-  border-top: 1px solid var(--rr-border);
-  padding-top: 8px;
-}
-
-.lal__snapshots summary {
-  cursor: pointer;
-  color: var(--rr-dim);
-  font-size: 11.5px;
-}
-
-.lal__snapshot {
-  margin-top: 8px;
-}
-
-.lal__snapshot header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.lal__snapwhen {
-  font-style: italic;
-}
-
-.lal__snappre {
-  margin: 4px 0 0;
-  padding: 8px 12px;
-  background: var(--rr-bg);
-  border: 1px solid var(--rr-border);
+.lal__hint code {
   font-family: var(--rr-font-mono);
-  font-size: 11.5px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow: auto;
-  color: var(--rr-ink2);
+  background: var(--rr-bg);
+  padding: 1px 4px;
 }
 </style>

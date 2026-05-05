@@ -9,20 +9,12 @@
 -->
 <script setup lang="ts">
 /**
- * MAL live-debugger view — SWIP-13 §1 MAL section + §7 design.
- *
- * Layout:
- *   - rule picker (catalog + name) fed from /runtime/rule/list
- *     across MAL catalogs (otel-rules + log-mal-rules).
- *   - capture controls: maxRecords, windowSec, Start / Stop.
- *   - cluster coverage strip + replaced-prior-id badge.
- *   - per-node waterfall with the 8 stage kinds; each row pairs
- *     `sourceText` (left, line gutter) with the result snapshot
- *     (right) — labels/value table for samples, populated
- *     `meterEntities[]` at terminal stages.
- *   - rule-snapshots disclosure showing the YAML for every
- *     contentHash the session encountered (handles hot-update mid-
- *     session honestly).
+ * MAL live-debugger view. Wire shape per
+ * `reference_swip13_actual_wire.md` — the recorder emits MAL stage
+ * names with sparse payloads (`{ samples, empty, extra }` for non-
+ * terminals; `{ metric, entity, value, valueType?, timeBucket? }` for
+ * meterBuild / meterEmit). No row-level sample arrays, no
+ * `meterEntities[]`.
  */
 import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
@@ -30,18 +22,22 @@ import type {
   Catalog,
   ListEnvelope,
   ListRow,
-  MalNodeSlice,
-  MalStageRecord,
-  MeterEntitySnapshot,
-  RuleSnapshot,
-  SampleSnapshot,
+  MalMeterPayload,
+  MalSamplesPayload,
+  NodeSlice,
+  SessionRecord,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import NodeCoverage from './NodeCoverage.vue';
-import { splitTruncation } from './truncation.js';
+import {
+  isMalMeterPayload,
+  isMalRecord,
+  isMalSamplesPayload,
+  shortHash,
+} from './payload.js';
 
 interface RuleOption {
   catalog: Catalog;
@@ -49,12 +45,12 @@ interface RuleOption {
   contentHash: string;
 }
 
-const MAL_CATALOGS: Catalog[] = ['otel-rules', 'log-mal-rules'];
+const MAL_CATALOGS: Catalog[] = ['otel-rules', 'log-mal-rules', 'telegraf-rules'];
 
 const dbg = useDebugSession('mal');
-const selectedKey = ref<string>(''); // `${catalog}/${name}`
-const maxRecords = ref<number>(100);
-const windowSec = ref<number>(60);
+const selectedKey = ref<string>('');
+const recordCap = ref<number>(1000);
+const retentionMinutes = ref<number>(5);
 
 const listQueries = MAL_CATALOGS.map((catalog) =>
   useQuery({
@@ -82,13 +78,10 @@ const selectedRule = computed<RuleOption | null>(() => {
 });
 
 const startEnabled = computed(() => {
+  const s = dbg.state.value;
   return (
     selectedRule.value !== null &&
-    (dbg.state.value === 'idle' ||
-      dbg.state.value === 'captured' ||
-      dbg.state.value === 'expired' ||
-      dbg.state.value === 'stopped' ||
-      dbg.state.value === 'error')
+    (s === 'idle' || s === 'captured' || s === 'stopped' || s === 'error')
   );
 });
 
@@ -102,65 +95,48 @@ async function startSampling(): Promise<void> {
   await dbg.start({
     catalog: rule.catalog,
     name: rule.name,
-    maxRecords: maxRecords.value,
-    windowSec: windowSec.value,
+    // MAL upstream uses (name, ruleName) where name is the rule name
+    // for runtime-rule catalogs. Pass through verbatim.
+    ruleName: rule.name,
+    recordCap: recordCap.value,
+    retentionMillis: retentionMinutes.value * 60 * 1000,
   });
 }
 
-const malSession = computed(() => {
+interface MalNodeView extends NodeSlice {
+  malRecords: SessionRecord[];
+}
+
+const nodeViews = computed<MalNodeView[]>(() => {
   const s = dbg.session.value;
-  if (s && (s.catalog === 'otel-rules' || s.catalog === 'log-mal-rules')) return s;
-  return null;
+  if (!s) return [];
+  return s.nodes.map((n) => ({
+    ...n,
+    malRecords: (n.records ?? []).filter(isMalRecord),
+  }));
 });
 
-function stageTone(kind: MalStageRecord['kind']): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
-  switch (kind) {
-    case 'meter_emit':
+function stageTone(stage: SessionRecord['stage']): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
+  switch (stage) {
+    case 'meterEmit':
       return 'active';
-    case 'meter_build':
+    case 'meterBuild':
       return 'info';
     case 'filter':
       return 'warn';
+    case 'input':
+      return 'ok';
     default:
       return 'dim';
   }
 }
 
-function describeSample(s: SampleSnapshot): string {
-  if (typeof s !== 'object' || s === null) return String(s);
-  const labelStr =
-    s.labels && Object.keys(s.labels).length > 0
-      ? Object.entries(s.labels)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(', ')
-      : '';
-  const valueStr = s.value !== undefined ? `→ ${String(s.value)}` : '';
-  if (labelStr || valueStr) return [labelStr, valueStr].filter(Boolean).join(' ');
-  return JSON.stringify(s);
+function asSamples(rec: SessionRecord): MalSamplesPayload | null {
+  return isMalSamplesPayload(rec.payload) ? rec.payload : null;
 }
 
-function describeEntity(e: MeterEntitySnapshot): string {
-  const id = e.entityId ?? e.name ?? '?';
-  const scope = e.scopeType ? `[${e.scopeType}]` : '';
-  const layer = e.layer ? ` ${e.layer}` : '';
-  const value = e.value !== undefined ? ` → ${formatValue(e.value)}` : '';
-  return `${id}${scope}${layer}${value}`;
-}
-
-function formatValue(v: unknown): string {
-  if (v === null || v === undefined) return '';
-  if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
-}
-
-const ruleSnapshotEntries = computed<[string, RuleSnapshot][]>(() => {
-  const s = malSession.value;
-  if (!s) return [];
-  return Object.entries(s.ruleSnapshots ?? {});
-});
-
-function shortHash(h: string): string {
-  return h ? h.slice(0, 8) : '—';
+function asMeter(rec: SessionRecord): MalMeterPayload | null {
+  return isMalMeterPayload(rec.payload) ? rec.payload : null;
 }
 </script>
 
@@ -177,16 +153,14 @@ function shortHash(h: string): string {
         </select>
       </div>
       <div class="mal__field">
-        <label class="mal__label">maxRecords</label>
-        <input v-model.number="maxRecords" type="number" min="1" max="500" class="mal__input" />
+        <label class="mal__label">recordCap</label>
+        <input v-model.number="recordCap" type="number" min="1" max="10000" class="mal__input" />
       </div>
       <div class="mal__field">
-        <label class="mal__label">windowSec</label>
-        <input v-model.number="windowSec" type="number" min="1" max="600" class="mal__input" />
+        <label class="mal__label">retention (min)</label>
+        <input v-model.number="retentionMinutes" type="number" min="1" max="60" class="mal__input" />
       </div>
-      <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">
-        start sampling
-      </Btn>
+      <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
       <span class="mal__statepill">
         <Pill :tone="dbg.state.value === 'capturing' ? 'active' : dbg.state.value === 'error' ? 'err' : 'dim'">
@@ -199,123 +173,88 @@ function shortHash(h: string): string {
     <p v-if="dbg.error.value" class="mal__error">{{ dbg.error.value }}</p>
 
     <NodeCoverage
-      v-if="dbg.peerAcks.value.length > 0 || (malSession?.nodes?.length ?? 0) > 0"
+      v-if="dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0"
       :peer-acks="dbg.peerAcks.value"
-      :node-statuses="malSession?.nodes ?? []"
-      :replaced-prior-ids="dbg.replacedPriorIds.value"
+      :node-statuses="dbg.session.value?.nodes ?? []"
+      :prior-cleanup="dbg.priorCleanup.value"
     />
 
-    <section v-if="malSession" class="mal__capture">
+    <section v-if="dbg.session.value" class="mal__capture">
       <header class="mal__captureh">
-        <span class="mal__rulename">
-          {{ malSession.catalog }} · {{ malSession.name }}
-        </span>
-        <Pill v-if="malSession.reason" :tone="malSession.reason === 'manual_stop' ? 'dim' : 'info'">
-          {{ malSession.reason }}
-        </Pill>
+        <span class="mal__sid2">session {{ dbg.session.value.sessionId }}</span>
       </header>
 
-      <div v-for="node in malSession.nodes" :key="node.nodeId" class="mal__node">
+      <div v-for="node in nodeViews" :key="node.nodeId ?? node.peer ?? '?'" class="mal__node">
         <header class="mal__nodeh">
-          <span class="mal__nodeid">{{ node.nodeId }}</span>
-          <Pill :tone="node.status === 'ok' ? 'ok' : 'warn'">{{ node.status }}</Pill>
+          <span class="mal__nodeid">{{ node.nodeId ?? node.peer ?? '?' }}</span>
+          <Pill :tone="node.status === 'ok' ? 'ok' : node.status === 'captured' ? 'info' : 'warn'">
+            {{ node.status }}
+          </Pill>
+          <span v-if="node.totalBytes !== undefined" class="mal__bytes">
+            {{ node.totalBytes }} bytes
+          </span>
         </header>
-        <div v-if="!node.records || node.records.length === 0" class="mal__nodeempty">
-          no captures from this node
+
+        <div v-if="node.malRecords.length === 0" class="mal__nodeempty">
+          no MAL records from this node
         </div>
+
         <table v-else class="mal__waterfall">
           <thead>
             <tr>
-              <th class="mal__line">ln</th>
-              <th class="mal__source">source</th>
+              <th class="mal__source">source / fragment</th>
               <th class="mal__kind">stage</th>
               <th class="mal__result">result</th>
+              <th class="mal__hash">hash</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(rec, idx) in node.records" :key="`${rec.id}-${idx}`">
-              <td class="mal__line">{{ rec.sourceLine ?? '—' }}</td>
+            <tr v-for="(rec, idx) in node.malRecords" :key="`${rec.stage}-${idx}-${rec.capturedAt}`">
               <td class="mal__source">
-                <code v-if="rec.sourceText">{{ rec.sourceText }}</code>
-                <span v-else class="mal__implicit">(implicit)</span>
+                <code>{{ rec.sourceText }}</code>
               </td>
               <td class="mal__kind">
-                <Pill :tone="stageTone(rec.kind)">{{ rec.kind }}</Pill>
-                <code v-if="rec.contentHash" class="mal__hash">{{ shortHash(rec.contentHash) }}</code>
+                <Pill :tone="stageTone(rec.stage)">{{ rec.stage }}</Pill>
               </td>
               <td class="mal__result">
-                <div v-if="rec.kind === 'downsampling'" class="mal__downsamp">
-                  {{ rec.downsampling?.function ?? '?' }}
-                  <Pill v-if="rec.downsampling?.origin === 'default'" tone="dim">default</Pill>
-                </div>
-
-                <div
-                  v-if="rec.inCount !== undefined || rec.outCount !== undefined || rec.dropped !== undefined"
-                  class="mal__counts"
-                >
-                  <span v-if="rec.inCount !== undefined">in {{ rec.inCount }}</span>
-                  <span v-if="rec.outCount !== undefined">out {{ rec.outCount }}</span>
-                  <span v-if="rec.dropped">dropped {{ rec.dropped }}</span>
-                </div>
-
-                <template v-if="rec.samples">
-                  <ul class="mal__samples">
-                    <li
-                      v-for="(s, i) in splitTruncation(rec.samples).entries"
-                      :key="i"
-                      class="mal__sample"
-                    >
-                      {{ describeSample(s) }}
-                    </li>
-                  </ul>
-                  <div v-if="splitTruncation(rec.samples).truncation" class="mal__more">
-                    {{ splitTruncation(rec.samples).truncation }}
+                <template v-if="asSamples(rec)">
+                  <div class="mal__counts">
+                    <span v-if="asSamples(rec)!.empty">empty family</span>
+                    <span v-else>samples · {{ asSamples(rec)!.samples ?? 0 }}</span>
+                    <span v-if="asSamples(rec)!.extra?.kept !== undefined">
+                      kept · {{ asSamples(rec)!.extra!.kept }}
+                    </span>
+                    <span v-if="asSamples(rec)!.extra?.entities !== undefined">
+                      entities · {{ asSamples(rec)!.extra!.entities }}
+                    </span>
                   </div>
                 </template>
-
-                <div v-if="rec.meterValueType" class="mal__valuetype">
-                  type · <code>{{ rec.meterValueType }}</code>
-                </div>
-
-                <template v-if="rec.meterEntities">
-                  <ul class="mal__entities">
-                    <li
-                      v-for="(e, i) in splitTruncation(rec.meterEntities).entries"
-                      :key="i"
-                      class="mal__entity"
-                    >
-                      {{ describeEntity(e) }}
-                    </li>
-                  </ul>
-                  <div v-if="splitTruncation(rec.meterEntities).truncation" class="mal__more">
-                    {{ splitTruncation(rec.meterEntities).truncation }}
+                <template v-else-if="asMeter(rec)">
+                  <div class="mal__meter">
+                    <div><span class="mal__lbl">metric</span> {{ asMeter(rec)!.metric }}</div>
+                    <div v-if="asMeter(rec)!.valueType">
+                      <span class="mal__lbl">type</span> {{ asMeter(rec)!.valueType }}
+                    </div>
+                    <div><span class="mal__lbl">entity</span> {{ asMeter(rec)!.entity }}</div>
+                    <div><span class="mal__lbl">value</span> {{ asMeter(rec)!.value }}</div>
+                    <div v-if="asMeter(rec)!.timeBucket !== undefined">
+                      <span class="mal__lbl">timeBucket</span> {{ asMeter(rec)!.timeBucket }}
+                    </div>
                   </div>
                 </template>
+              </td>
+              <td class="mal__hash">
+                <code>{{ shortHash(rec.contentHash) }}</code>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
-
-      <details v-if="ruleSnapshotEntries.length > 0" class="mal__snapshots">
-        <summary>
-          {{ ruleSnapshotEntries.length }} rule snapshot{{ ruleSnapshotEntries.length === 1 ? '' : 's' }}
-        </summary>
-        <div v-for="[hash, snap] in ruleSnapshotEntries" :key="hash" class="mal__snapshot">
-          <header>
-            <code>{{ shortHash(hash) }}</code>
-            <span v-if="snap.capturedFirstAt" class="mal__snapwhen">
-              first seen {{ new Date(snap.capturedFirstAt).toISOString() }}
-            </span>
-          </header>
-          <pre class="mal__snappre">{{ snap.content }}</pre>
-        </div>
-      </details>
     </section>
 
     <p v-else-if="dbg.state.value === 'idle'" class="mal__hint">
-      pick a rule and hit start. each session captures one rule's
-      pipeline stages on every cluster node simultaneously.
+      pick a rule and hit start. each session captures one rule's pipeline
+      stages on every cluster node simultaneously.
     </p>
   </div>
 </template>
@@ -382,6 +321,12 @@ function shortHash(h: string): string {
   color: var(--rr-dim);
 }
 
+.mal__sid2 {
+  font-family: var(--rr-font-mono);
+  color: var(--rr-heading);
+  font-size: 12px;
+}
+
 .mal__error {
   padding: 8px 12px;
   background: var(--rr-bg2);
@@ -406,12 +351,6 @@ function shortHash(h: string): string {
   gap: 10px;
 }
 
-.mal__rulename {
-  font-family: var(--rr-font-mono);
-  color: var(--rr-heading);
-  font-size: 13px;
-}
-
 .mal__node {
   border: 1px solid var(--rr-border);
 }
@@ -429,6 +368,13 @@ function shortHash(h: string): string {
   font-family: var(--rr-font-mono);
   font-size: 12px;
   color: var(--rr-heading);
+}
+
+.mal__bytes {
+  margin-left: auto;
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  color: var(--rr-dim);
 }
 
 .mal__nodeempty {
@@ -461,12 +407,6 @@ function shortHash(h: string): string {
   border-bottom: 1px solid var(--rr-border);
 }
 
-.mal__line {
-  width: 36px;
-  font-family: var(--rr-font-mono);
-  color: var(--rr-dim);
-}
-
 .mal__source {
   width: 320px;
   font-family: var(--rr-font-mono);
@@ -480,73 +420,41 @@ function shortHash(h: string): string {
 }
 
 .mal__kind {
-  width: 130px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  width: 110px;
+}
+
+.mal__result {
+  font-family: var(--rr-font-mono);
+  color: var(--rr-ink2);
+  font-size: 11.5px;
 }
 
 .mal__hash {
+  width: 80px;
   font-family: var(--rr-font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--rr-dim);
-}
-
-.mal__implicit {
-  color: var(--rr-dim);
-  font-style: italic;
-  font-size: 11.5px;
 }
 
 .mal__counts {
   display: flex;
-  gap: 10px;
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
+  gap: 12px;
+}
+
+.mal__meter {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.mal__lbl {
+  display: inline-block;
+  width: 90px;
   color: var(--rr-dim);
-}
-
-.mal__samples,
-.mal__entities {
-  margin: 4px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.mal__sample,
-.mal__entity {
-  font-family: var(--rr-font-mono);
-  font-size: 11.5px;
-  color: var(--rr-ink2);
-  padding: 1px 0;
-}
-
-.mal__valuetype {
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-dim);
-  margin-top: 4px;
-}
-
-.mal__valuetype code {
-  color: var(--rr-ink2);
-}
-
-.mal__more {
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-warn, #d4a93b);
-  margin-top: 2px;
-}
-
-.mal__downsamp {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--rr-font-mono);
-  font-size: 12px;
-  color: var(--rr-ink);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-right: 6px;
 }
 
 .mal__hint {
@@ -556,46 +464,5 @@ function shortHash(h: string): string {
   color: var(--rr-dim);
   font-size: 12px;
   margin: 0;
-}
-
-.mal__snapshots {
-  border-top: 1px solid var(--rr-border);
-  padding-top: 8px;
-}
-
-.mal__snapshots summary {
-  cursor: pointer;
-  color: var(--rr-dim);
-  font-size: 11.5px;
-}
-
-.mal__snapshot {
-  margin-top: 8px;
-}
-
-.mal__snapshot header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11px;
-  color: var(--rr-dim);
-}
-
-.mal__snapwhen {
-  font-style: italic;
-}
-
-.mal__snappre {
-  margin: 4px 0 0;
-  padding: 8px 12px;
-  background: var(--rr-bg);
-  border: 1px solid var(--rr-border);
-  font-family: var(--rr-font-mono);
-  font-size: 11.5px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow: auto;
-  color: var(--rr-ink2);
 }
 </style>

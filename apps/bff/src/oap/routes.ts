@@ -275,8 +275,13 @@ export function registerOapRoutes(app: FastifyInstance, deps: OapRouteDeps): voi
   );
 
   // ── OAL read-only browse (SWIP-13 §4.1) ──────────────────────────
-  // Read-only — no audit. Same `rule:read` verb gates as runtime-rule
-  // catalog browse. OAL hot-update is intentionally out of scope.
+  // Read-only — no audit. `rule:read` gate.
+  //
+  // Wire shape from RuntimeOalRestHandler.java:
+  //   /files          — { files: string[], count }
+  //   /files/{name}   — text/plain raw .oal content
+  //   /rules          — per-dispatcher listing { sources, count }
+  //   /rules/{source} — single source detail with `status: live | no_holder`
 
   app.get(
     '/api/oal/files',
@@ -300,9 +305,10 @@ export function registerOapRoutes(app: FastifyInstance, deps: OapRouteDeps): voi
       const params = req.params as { name: string };
       if (!params.name) return reply.code(400).send({ error: 'missing_name' });
       try {
-        const file = await clients().oal().getFile(params.name);
-        if (file === null) return reply.code(404).send({ error: 'not_found' });
-        return reply.send(file);
+        const content = await clients().oal().getFileContent(params.name);
+        if (content === null) return reply.code(404).send({ error: 'not_found' });
+        reply.header('content-type', 'text/plain; charset=utf-8');
+        return reply.send(content);
       } catch (err) {
         return passOapError(err, reply);
       }
@@ -315,8 +321,8 @@ export function registerOapRoutes(app: FastifyInstance, deps: OapRouteDeps): voi
     async (req: FastifyRequest, reply: FastifyReply) => {
       if (!ensureVerb(req, reply, deps, 'rule:read')) return;
       try {
-        const rules = await clients().oal().listRules();
-        return reply.send(rules);
+        const sources = await clients().oal().listSources();
+        return reply.send(sources);
       } catch (err) {
         return passOapError(err, reply);
       }
@@ -324,16 +330,16 @@ export function registerOapRoutes(app: FastifyInstance, deps: OapRouteDeps): voi
   );
 
   app.get(
-    '/api/oal/rules/:ruleName',
+    '/api/oal/rules/:source',
     { preHandler: auth },
     async (req: FastifyRequest, reply: FastifyReply) => {
       if (!ensureVerb(req, reply, deps, 'rule:read')) return;
-      const params = req.params as { ruleName: string };
-      if (!params.ruleName) return reply.code(400).send({ error: 'missing_rule_name' });
+      const params = req.params as { source: string };
+      if (!params.source) return reply.code(400).send({ error: 'missing_source' });
       try {
-        const rule = await clients().oal().getRule(params.ruleName);
-        if (rule === null) return reply.code(404).send({ error: 'not_found' });
-        return reply.send(rule);
+        const detail = await clients().oal().getSource(params.source);
+        if (detail === null) return reply.code(404).send({ error: 'not_found' });
+        return reply.send(detail);
       } catch (err) {
         return passOapError(err, reply);
       }

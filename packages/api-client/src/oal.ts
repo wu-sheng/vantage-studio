@@ -149,9 +149,15 @@ export class OalClient {
     const text = await res.text();
     let parsed: ApplyResult | string = text;
     try {
-      const json = JSON.parse(text) as Partial<ApplyResult>;
+      const json = JSON.parse(text) as Record<string, unknown>;
       if (typeof json.applyStatus === 'string' && typeof json.message === 'string') {
-        parsed = json as ApplyResult;
+        parsed = json as unknown as ApplyResult;
+      } else if (
+        json.status === 'error' &&
+        typeof json.code === 'string' &&
+        typeof json.message === 'string'
+      ) {
+        parsed = json as unknown as ApplyResult;
       }
     } catch {
       // not JSON; keep the raw text.

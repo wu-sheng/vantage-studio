@@ -24,7 +24,7 @@
  */
 
 import type {
-  ActiveSessionRow,
+  ActiveSessionsResponse,
   ApplyResult,
   BundledEntry,
   Catalog,
@@ -32,15 +32,16 @@ import type {
   DslDebuggingStatus,
   ListEnvelope,
   LocalState,
-  OalFileDetail,
-  OalFileListing,
-  OalRuleSnapshot,
+  OalFilesResponse,
+  OalRulesResponse,
+  OalSourceDetail,
   RuleResponse,
   RuleSource,
   RuleStatus,
   SessionResponse,
   StartSessionArgs,
   StartSessionResponse,
+  StopSessionResponse,
 } from '@vantage-studio/api-client';
 
 /**
@@ -215,36 +216,38 @@ export class BffClient {
     return this.request<ClusterStateResponse>('GET', '/api/cluster/state');
   }
 
-  /** `GET /api/oal/files` — read-only listing of loaded `.oal`
-   *  files (SWIP-13 §4.1). One row per file with `contentHash` for
-   *  matching against live-debugger captures. */
-  async oalFiles(): Promise<OalFileListing[]> {
-    return this.request<OalFileListing[]>('GET', '/api/oal/files');
+  /** `GET /api/oal/files` — bare file-name listing
+   *  (`{ files, count }`). */
+  async oalFiles(): Promise<OalFilesResponse> {
+    return this.request<OalFilesResponse>('GET', '/api/oal/files');
   }
 
-  /** `GET /api/oal/files/{name}` — file detail with raw `.oal` text
-   *  + parsed rules. Returns `null` on 404. */
-  async oalFile(name: string): Promise<OalFileDetail | null> {
+  /** `GET /api/oal/files/{name}` — raw `.oal` text. Returns `null`
+   *  on 404. */
+  async oalFileContent(name: string): Promise<string | null> {
+    const res = await fetch(`${this.base}/api/oal/files/${encodeURIComponent(name)}`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'text/plain' },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw await this.toError(res);
+    return res.text();
+  }
+
+  /** `GET /api/oal/rules` — per-dispatcher listing the OAL debugger's
+   *  source picker consumes. */
+  async oalSources(): Promise<OalRulesResponse> {
+    return this.request<OalRulesResponse>('GET', '/api/oal/rules');
+  }
+
+  /** `GET /api/oal/rules/{source}` — single-source detail with
+   *  holder-bound `status: live | no_holder`. Returns `null` on 404. */
+  async oalSource(source: string): Promise<OalSourceDetail | null> {
     try {
-      return await this.request<OalFileDetail>('GET', `/api/oal/files/${encodeURIComponent(name)}`);
-    } catch (err) {
-      if (isApiError(err) && err.status === 404) return null;
-      throw err;
-    }
-  }
-
-  /** `GET /api/oal/rules` — flat list of every loaded rule. Feeds
-   *  the OAL live debugger's rule picker. */
-  async oalRules(): Promise<OalRuleSnapshot[]> {
-    return this.request<OalRuleSnapshot[]>('GET', '/api/oal/rules');
-  }
-
-  /** `GET /api/oal/rules/{ruleName}`. Returns `null` on 404. */
-  async oalRule(ruleName: string): Promise<OalRuleSnapshot | null> {
-    try {
-      return await this.request<OalRuleSnapshot>(
+      return await this.request<OalSourceDetail>(
         'GET',
-        `/api/oal/rules/${encodeURIComponent(ruleName)}`,
+        `/api/oal/rules/${encodeURIComponent(source)}`,
       );
     } catch (err) {
       if (isApiError(err) && err.status === 404) return null;
@@ -252,19 +255,17 @@ export class BffClient {
     }
   }
 
-  // ── DSL live debugger (SWIP-13 §4.2) ─────────────────────────────
+  // ── DSL live debugger (SWIP-13 §4.2 — actual wire shape) ─────────
 
-  /** `POST /api/debug/session` — start a debug session. The backend
-   *  broadcasts a cluster-scope `StopByClientId` for the supplied
-   *  `clientId` before allocating, so a new POST under the same
-   *  clientId always replaces any prior session. Returns the
-   *  allocated `sessionId` plus per-peer install acks. */
+  /** `POST /api/debug/session` — start. The BFF translates this body
+   *  into the upstream's query-param + optional-body shape. The
+   *  upstream broadcasts a cluster-scope `StopByClientId` for the
+   *  supplied `clientId` before allocating. */
   async debugStart(args: StartSessionArgs): Promise<StartSessionResponse> {
     return this.request<StartSessionResponse>('POST', '/api/debug/session', args);
   }
 
-  /** `GET /api/debug/session/{id}` — poll. Returns `null` on 404
-   *  (session expired). */
+  /** `GET /api/debug/session/{id}` — poll. Returns `null` on 404. */
   async debugSession(id: string): Promise<SessionResponse | null> {
     try {
       return await this.request<SessionResponse>(
@@ -277,15 +278,18 @@ export class BffClient {
     }
   }
 
-  /** `POST /api/debug/session/{id}/stop` — idempotent. */
-  async debugStop(id: string): Promise<void> {
-    await this.request<void>('POST', `/api/debug/session/${encodeURIComponent(id)}/stop`);
+  /** `POST /api/debug/session/{id}/stop` — idempotent. Returns the
+   *  per-peer stop outcome. */
+  async debugStop(id: string): Promise<StopSessionResponse> {
+    return this.request<StopSessionResponse>(
+      'POST',
+      `/api/debug/session/${encodeURIComponent(id)}/stop`,
+    );
   }
 
-  /** `GET /api/debug/sessions` — active sessions across the
-   *  cluster. */
-  async debugSessions(): Promise<ActiveSessionRow[]> {
-    return this.request<ActiveSessionRow[]>('GET', '/api/debug/sessions');
+  /** `GET /api/debug/sessions` — JSON object `{ sessions, count }`. */
+  async debugSessions(): Promise<ActiveSessionsResponse> {
+    return this.request<ActiveSessionsResponse>('GET', '/api/debug/sessions');
   }
 
   /** `GET /api/debug/status` — per-node DSL-debugging health

@@ -38,7 +38,7 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 interface DebugStub {
-  start?: (init: RequestInit) => Response;
+  start?: (init: RequestInit, url: string) => Response;
   get?: (url: string) => Response;
   stop?: (url: string) => Response;
   list?: () => Response;
@@ -67,10 +67,10 @@ function makeFetch(stub: DebugStub): {
     }
     if (url.match(/\/dsl-debugging\/session\/[^/]+\/stop$/))
       return stub.stop?.(url) ?? new Response('no stop stub', { status: 500 });
-    if (url.match(/\/dsl-debugging\/session\/[^?]+/) && r.method === 'GET')
+    if (url.match(/\/dsl-debugging\/session\/[^/?]+(\?|$)/) && r.method === 'GET')
       return stub.get?.(url) ?? new Response('no get stub', { status: 500 });
-    if (url.endsWith('/dsl-debugging/session') && r.method === 'POST')
-      return stub.start?.(r) ?? new Response('no start stub', { status: 500 });
+    if (url.includes('/dsl-debugging/session') && r.method === 'POST')
+      return stub.start?.(r, url) ?? new Response('no start stub', { status: 500 });
     if (url.includes('/dsl-debugging/sessions'))
       return stub.list?.() ?? new Response('no list stub', { status: 500 });
     return new Response(`unmocked: ${url}`, { status: 500 });
@@ -115,6 +115,16 @@ async function makeApp(stub: DebugStub, opts: { rbac?: boolean } = {}): Promise<
   return { app: built.app, audit, oapCalls: calls, sid };
 }
 
+const sampleStartResponse = {
+  sessionId: 'd-abc',
+  clientId: 'tab-1',
+  ruleKey: { catalog: 'lal', name: 'default.yaml', ruleName: 'default' },
+  createdAt: 1700000000000,
+  retentionDeadline: 1700000300000,
+  peers: [{ peer: 'oap-2:11800', nodeId: 'oap-02', ack: 'INSTALLED' }],
+  priorCleanup: [],
+};
+
 describe('debug-routes — POST /api/debug/session', () => {
   let ctx: Ctx;
 
@@ -122,15 +132,16 @@ describe('debug-routes — POST /api/debug/session', () => {
     await ctx.app.close();
   });
 
-  it('forwards a valid MAL session start and audits it', async () => {
+  it('translates SPA JSON body to upstream query params', async () => {
     ctx = await makeApp({
-      start: () =>
-        jsonResponse({
-          sessionId: 'd-abc',
-          expiresAt: 999,
-          replacedPriorId: 'd-prev',
-          peers: [{ nodeId: 'oap-02', ack: 'ok' }],
-        }),
+      start: (_init, url) => {
+        // Verify the upstream call is query-param shaped.
+        expect(url).toContain('catalog=lal');
+        expect(url).toContain('name=default.yaml');
+        expect(url).toContain('ruleName=default');
+        expect(url).toContain('clientId=tab-1');
+        return jsonResponse(sampleStartResponse);
+      },
     });
     const r = await ctx.app.inject({
       method: 'POST',
@@ -138,10 +149,11 @@ describe('debug-routes — POST /api/debug/session', () => {
       headers: { cookie: `sid=${ctx.sid}` },
       payload: {
         clientId: 'tab-1',
-        catalog: 'otel-rules',
-        name: 'vm',
-        windowSec: 60,
-        maxRecords: 100,
+        catalog: 'lal',
+        name: 'default.yaml',
+        ruleName: 'default',
+        recordCap: 50,
+        retentionMillis: 60_000,
       },
     });
     expect(r.statusCode).toBe(200);
@@ -152,57 +164,42 @@ describe('debug-routes — POST /api/debug/session', () => {
     expect(startEvents[0]!.details).toMatchObject({
       sessionId: 'd-abc',
       clientId: 'tab-1',
-      catalog: 'otel-rules',
-      name: 'vm',
-      replacedPriorId: 'd-prev',
+      catalog: 'lal',
+      name: 'default.yaml',
+      ruleName: 'default',
+      recordCap: 50,
+      retentionMillis: 60_000,
+      priorCleanupCount: 0,
     });
   });
 
-  it('forwards a valid OAL session start with ruleName', async () => {
+  it('forwards an OAL session start where name=ruleName=source class', async () => {
     ctx = await makeApp({
-      start: () => jsonResponse({ sessionId: 'd-1', expiresAt: 1, peers: [] }),
+      start: () =>
+        jsonResponse({
+          ...sampleStartResponse,
+          ruleKey: { catalog: 'oal', name: 'Endpoint', ruleName: 'Endpoint' },
+        }),
     });
     const r = await ctx.app.inject({
       method: 'POST',
       url: '/api/debug/session',
       headers: { cookie: `sid=${ctx.sid}` },
-      payload: {
-        clientId: 'tab-1',
-        catalog: 'oal',
-        name: 'core',
-        ruleName: 'endpoint_cpm',
-      },
+      payload: { clientId: 'tab-1', catalog: 'oal', name: 'Endpoint', ruleName: 'Endpoint' },
     });
     expect(r.statusCode).toBe(200);
   });
 
-  it('rejects OAL session without ruleName', async () => {
+  it('rejects missing ruleName', async () => {
     ctx = await makeApp({});
     const r = await ctx.app.inject({
       method: 'POST',
       url: '/api/debug/session',
       headers: { cookie: `sid=${ctx.sid}` },
-      payload: { clientId: 'tab-1', catalog: 'oal', name: 'core' },
+      payload: { clientId: 'tab-1', catalog: 'oal', name: 'Endpoint' },
     });
     expect(r.statusCode).toBe(400);
-    expect(r.json().error).toBe('missing_ruleName_for_oal');
-  });
-
-  it('rejects MAL session with ruleName (only allowed for OAL)', async () => {
-    ctx = await makeApp({});
-    const r = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/debug/session',
-      headers: { cookie: `sid=${ctx.sid}` },
-      payload: {
-        clientId: 'tab-1',
-        catalog: 'otel-rules',
-        name: 'vm',
-        ruleName: 'something',
-      },
-    });
-    expect(r.statusCode).toBe(400);
-    expect(r.json().error).toBe('ruleName_only_for_oal');
+    expect(r.json().error).toBe('missing_ruleName');
   });
 
   it('rejects an invalid debug catalog', async () => {
@@ -211,49 +208,13 @@ describe('debug-routes — POST /api/debug/session', () => {
       method: 'POST',
       url: '/api/debug/session',
       headers: { cookie: `sid=${ctx.sid}` },
-      payload: { clientId: 'tab-1', catalog: 'nope', name: 'x' },
+      payload: { clientId: 'tab-1', catalog: 'bogus', name: 'x', ruleName: 'x' },
     });
     expect(r.statusCode).toBe(400);
     expect(r.json().error).toBe('invalid_catalog');
   });
 
-  it('rejects granularity for non-LAL catalogs', async () => {
-    ctx = await makeApp({});
-    const r = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/debug/session',
-      headers: { cookie: `sid=${ctx.sid}` },
-      payload: {
-        clientId: 'tab-1',
-        catalog: 'otel-rules',
-        name: 'vm',
-        granularity: 'statement',
-      },
-    });
-    expect(r.statusCode).toBe(400);
-    expect(r.json().error).toBe('granularity_only_for_lal');
-  });
-
-  it('accepts LAL granularity + blocks', async () => {
-    ctx = await makeApp({
-      start: () => jsonResponse({ sessionId: 'd-1', expiresAt: 1, peers: [] }),
-    });
-    const r = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/debug/session',
-      headers: { cookie: `sid=${ctx.sid}` },
-      payload: {
-        clientId: 'tab-1',
-        catalog: 'lal',
-        name: 'envoy-als',
-        granularity: 'statement',
-        blocks: ['extractor', 'sink'],
-      },
-    });
-    expect(r.statusCode).toBe(200);
-  });
-
-  it('rejects invalid LAL block kinds', async () => {
+  it('rejects negative recordCap', async () => {
     ctx = await makeApp({});
     const r = await ctx.app.inject({
       method: 'POST',
@@ -262,12 +223,13 @@ describe('debug-routes — POST /api/debug/session', () => {
       payload: {
         clientId: 'tab-1',
         catalog: 'lal',
-        name: 'envoy-als',
-        blocks: ['bogus'],
+        name: 'default.yaml',
+        ruleName: 'default',
+        recordCap: -1,
       },
     });
     expect(r.statusCode).toBe(400);
-    expect(r.json().error).toBe('invalid_block');
+    expect(r.json().error).toBe('invalid_recordCap');
   });
 
   it('returns 401 without a session', async () => {
@@ -275,33 +237,37 @@ describe('debug-routes — POST /api/debug/session', () => {
     const r = await ctx.app.inject({
       method: 'POST',
       url: '/api/debug/session',
-      payload: { clientId: 'x', catalog: 'otel-rules', name: 'vm' },
+      payload: { clientId: 'x', catalog: 'lal', name: 'default.yaml', ruleName: 'default' },
     });
     expect(r.statusCode).toBe(401);
   });
 
-  it('records OAP errors in the audit trail', async () => {
+  it('records OAP errors in the audit trail with the error code', async () => {
     ctx = await makeApp({
       start: () =>
         new Response(
           JSON.stringify({
-            applyStatus: 'max_active_sessions_reached',
-            message: 'cap hit',
-            catalog: 'otel-rules',
-            name: 'vm',
+            status: 'error',
+            code: 'rule_not_found',
+            message: 'no holder',
           }),
-          { status: 429, headers: { 'Content-Type': 'application/json' } },
+          { status: 404, headers: { 'Content-Type': 'application/json' } },
         ),
     });
     const r = await ctx.app.inject({
       method: 'POST',
       url: '/api/debug/session',
       headers: { cookie: `sid=${ctx.sid}` },
-      payload: { clientId: 'tab-1', catalog: 'otel-rules', name: 'vm' },
+      payload: {
+        clientId: 'tab-1',
+        catalog: 'lal',
+        name: 'default.yaml',
+        ruleName: 'default',
+      },
     });
-    expect(r.statusCode).toBe(429);
+    expect(r.statusCode).toBe(404);
     const evt = ctx.audit.events.find((e) => e.action === 'debug.start');
-    expect(evt!.outcome).toBe('max_active_sessions_reached');
+    expect(evt!.outcome).toBe('rule_not_found');
   });
 });
 
@@ -316,12 +282,15 @@ describe('debug-routes — GET /api/debug/session/:id', () => {
       get: () =>
         jsonResponse({
           sessionId: 'd-1',
-          status: 'capturing',
-          catalog: 'otel-rules',
-          name: 'vm',
-          expiresAt: 1,
-          ruleSnapshots: {},
-          nodes: [],
+          nodes: [
+            {
+              nodeId: 'oap-01',
+              status: 'ok',
+              captured: false,
+              totalBytes: 0,
+              records: [],
+            },
+          ],
         }),
     });
     const r = await ctx.app.inject({
@@ -330,10 +299,10 @@ describe('debug-routes — GET /api/debug/session/:id', () => {
       headers: { cookie: `sid=${ctx.sid}` },
     });
     expect(r.statusCode).toBe(200);
-    expect(r.json().status).toBe('capturing');
+    expect(r.json().nodes[0].status).toBe('ok');
   });
 
-  it('returns 404 when OAP says expired', async () => {
+  it('returns 404 when OAP says not found', async () => {
     ctx = await makeApp({ get: () => new Response('expired', { status: 404 }) });
     const r = await ctx.app.inject({
       method: 'GET',
@@ -350,19 +319,61 @@ describe('debug-routes — POST /api/debug/session/:id/stop', () => {
     await ctx.app.close();
   });
 
-  it('stops the session and audits it', async () => {
+  it('returns the stop response and audits it', async () => {
     ctx = await makeApp({
-      stop: () => new Response(null, { status: 204 }),
+      stop: () =>
+        jsonResponse({
+          sessionId: 'd-1',
+          localStopped: true,
+          peers: [],
+        }),
     });
     const r = await ctx.app.inject({
       method: 'POST',
       url: '/api/debug/session/d-1/stop',
       headers: { cookie: `sid=${ctx.sid}` },
     });
-    expect(r.statusCode).toBe(204);
+    expect(r.statusCode).toBe(200);
+    expect(r.json().localStopped).toBe(true);
     const evt = ctx.audit.events.find((e) => e.action === 'debug.stop');
     expect(evt!.details?.sessionId).toBe('d-1');
     expect(evt!.outcome).toBe('ok');
+  });
+});
+
+describe('debug-routes — GET /api/debug/sessions', () => {
+  let ctx: Ctx;
+  afterEach(async () => {
+    await ctx.app.close();
+  });
+
+  it('returns the JSON object envelope', async () => {
+    ctx = await makeApp({
+      list: () =>
+        jsonResponse({
+          sessions: [
+            {
+              sessionId: 'd-1',
+              clientId: 'c-1',
+              ruleKey: { catalog: 'lal', name: 'default.yaml', ruleName: 'default' },
+              createdAt: 1,
+              retentionDeadline: 2,
+              captured: false,
+              totalBytes: 0,
+            },
+          ],
+          count: 1,
+        }),
+    });
+    const r = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/debug/sessions',
+      headers: { cookie: `sid=${ctx.sid}` },
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.count).toBe(1);
+    expect(body.sessions[0].sessionId).toBe('d-1');
   });
 });
 
@@ -372,30 +383,24 @@ describe('debug-routes — GET /api/debug/status (cluster fan-out)', () => {
     await ctx.app.close();
   });
 
-  it('aggregates per-node status', async () => {
+  it('aggregates per-node 5-field status', async () => {
     ctx = await makeApp({
       perNodeStatus: {
         'oap-1': () =>
           jsonResponse({
-            adminHostEnabled: true,
-            dslDebuggingEnabled: true,
+            module: 'dsl-debugging',
+            phase: 'phase-4',
+            nodeId: 'oap-01',
             injectionEnabled: true,
-            sessionsAcceptingNewRequests: true,
             activeSessions: 3,
-            maxActiveSessions: 200,
-            ruleClassesWithProbes: 87,
-            ruleClassesTotal: 87,
           }),
         'oap-2': () =>
           jsonResponse({
-            adminHostEnabled: true,
-            dslDebuggingEnabled: true,
+            module: 'dsl-debugging',
+            phase: 'phase-4',
+            nodeId: 'oap-02',
             injectionEnabled: false,
-            sessionsAcceptingNewRequests: false,
             activeSessions: 0,
-            maxActiveSessions: 200,
-            ruleClassesWithProbes: 0,
-            ruleClassesTotal: 87,
           }),
       },
     });
@@ -418,14 +423,11 @@ describe('debug-routes — GET /api/debug/status (cluster fan-out)', () => {
         'oap-1': () => new Response('boom', { status: 500 }),
         'oap-2': () =>
           jsonResponse({
-            adminHostEnabled: true,
-            dslDebuggingEnabled: true,
+            module: 'dsl-debugging',
+            phase: 'phase-4',
+            nodeId: 'oap-02',
             injectionEnabled: true,
-            sessionsAcceptingNewRequests: true,
             activeSessions: 0,
-            maxActiveSessions: 200,
-            ruleClassesWithProbes: 87,
-            ruleClassesTotal: 87,
           }),
       },
     });
@@ -438,52 +440,5 @@ describe('debug-routes — GET /api/debug/status (cluster fan-out)', () => {
     const body = r.json();
     expect(body.nodes[0].ok).toBe(false);
     expect(body.nodes[1].ok).toBe(true);
-  });
-});
-
-describe('debug-routes — GET /api/debug/sessions list', () => {
-  let ctx: Ctx;
-  afterEach(async () => {
-    await ctx.app.close();
-  });
-
-  it('parses NDJSON from OAP into a JSON array', async () => {
-    ctx = await makeApp({
-      list: () =>
-        new Response(
-          [
-            JSON.stringify({
-              sessionId: 'd-1',
-              clientId: 'c-1',
-              catalog: 'otel-rules',
-              name: 'vm',
-              status: 'capturing',
-              startedAt: 1,
-              expiresAt: 2,
-            }),
-            JSON.stringify({
-              sessionId: 'd-2',
-              clientId: 'c-2',
-              catalog: 'lal',
-              name: 'envoy-als',
-              status: 'captured',
-              startedAt: 1,
-              expiresAt: 2,
-            }),
-            '',
-          ].join('\n'),
-          { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } },
-        ),
-    });
-    const r = await ctx.app.inject({
-      method: 'GET',
-      url: '/api/debug/sessions',
-      headers: { cookie: `sid=${ctx.sid}` },
-    });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body).toHaveLength(2);
-    expect(body[0].sessionId).toBe('d-1');
-    expect(body[1].catalog).toBe('lal');
   });
 });

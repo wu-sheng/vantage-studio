@@ -15,23 +15,19 @@
  */
 
 /**
- * `/api/debug/*` routes — passthrough proxy for SWIP-13's
- * DSL-debugging surface. Six handlers:
+ * `/api/debug/*` routes — passthrough proxy for the actual SWIP-13
+ * `/dsl-debugging/*` wire surface (see
+ * `reference_swip13_actual_wire.md`).
  *
- *   POST /api/debug/session          — start (audit start)
- *   GET  /api/debug/session/:id      — poll (no audit)
- *   POST /api/debug/session/:id/stop — stop  (audit stop)
- *   GET  /api/debug/sessions         — list active
- *   GET  /api/debug/status           — per-cluster fan-out
+ *   POST /api/debug/session              — start (audited)
+ *   GET  /api/debug/session/:id          — poll
+ *   POST /api/debug/session/:id/stop     — stop  (audited)
+ *   GET  /api/debug/sessions             — active list (JSON object)
+ *   GET  /api/debug/status               — per-cluster fan-out
  *
- * The `clientId` is minted client-side per browser tab/widget; BFF
- * forwards it verbatim. SWIP §5 specifies a cluster-scope
- * `StopByClientId` broadcast on every session start, so a load-
- * balancer routing the next start to a different node still cleans
- * up the prior session correctly.
- *
- * RBAC verb is `rule:debug`. Audit logs `start` and `stop` events;
- * polling and listing are not audited.
+ * The handler accepts a JSON body for input convenience (so the SPA
+ * doesn't need to query-string-encode params) and translates to the
+ * upstream's query-param shape on the wire. RBAC verb `rule:debug`.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -40,8 +36,6 @@ import {
   isDebugCatalog,
   type DebugCatalog,
   type DslDebuggingStatus,
-  type Granularity,
-  type LalBlock,
   type StartSessionArgs,
 } from '@vantage-studio/api-client';
 import type { ConfigHandle } from '../config/loader.js';
@@ -65,16 +59,6 @@ export interface ClusterDebugStatus {
   generatedAt: number;
   nodes: { url: string; ok: boolean; status?: DslDebuggingStatus; error?: string }[];
 }
-
-const VALID_GRANULARITY = new Set<Granularity>(['block', 'statement']);
-const VALID_LAL_BLOCKS = new Set<LalBlock>([
-  'text',
-  'parser',
-  'extractor',
-  'sink',
-  'output_record',
-  'output_metric',
-]);
 
 export function registerDebugRoutes(app: FastifyInstance, deps: DebugRouteDeps): void {
   const auth = requireAuth(deps);
@@ -104,9 +88,9 @@ export function registerDebugRoutes(app: FastifyInstance, deps: DebugRouteDeps):
             catalog: parsed.catalog,
             name: parsed.name,
             ruleName: parsed.ruleName,
-            granularity: parsed.granularity,
-            replacedPriorId: result.replacedPriorId,
-            replacedPriorIds: result.replacedPriorIds,
+            recordCap: parsed.recordCap,
+            retentionMillis: parsed.retentionMillis,
+            priorCleanupCount: result.priorCleanup.length,
           },
           fromIp: req.ip,
           sessionId: req.session?.sid,
@@ -159,17 +143,17 @@ export function registerDebugRoutes(app: FastifyInstance, deps: DebugRouteDeps):
       const params = req.params as { id: string };
       if (!params.id) return reply.code(400).send({ error: 'missing_id' });
       try {
-        await clients().debug().stopSession(params.id);
+        const result = await clients().debug().stopSession(params.id);
         deps.audit.log({
           action: 'debug.stop',
           verb: 'rule:debug',
           actor: req.session?.username ?? null,
           outcome: 'ok',
-          details: { sessionId: params.id },
+          details: { sessionId: params.id, localStopped: result.localStopped },
           fromIp: req.ip,
           sessionId: req.session?.sid,
         });
-        return reply.code(204).send();
+        return reply.send(result);
       } catch (err) {
         deps.audit.log({
           action: 'debug.stop',
@@ -201,9 +185,8 @@ export function registerDebugRoutes(app: FastifyInstance, deps: DebugRouteDeps):
   );
 
   // ── per-cluster status fan-out ───────────────────────────────────
-  // GET /dsl-debugging/status is a per-node read; for the cluster
-  // status pane Studio fans out across `oap.adminUrls` and reports
-  // per-node posture, mirroring the runtime-rule cluster matrix.
+  // /dsl-debugging/status is a per-node read; the cluster pane wants
+  // all nodes' posture, so the BFF fans out.
   app.get(
     '/api/debug/status',
     { preHandler: auth },
@@ -250,6 +233,8 @@ function ensureVerb(
   return true;
 }
 
+/** Validate the JSON body the SPA posts. Translates to the wire's
+ *  query-param + optional-body shape inside `DslDebuggingClient`. */
 function parseStartArgs(raw: unknown, reply: FastifyReply): StartSessionArgs | null {
   if (typeof raw !== 'object' || raw === null) {
     reply.code(400).send({ error: 'invalid_body' });
@@ -268,77 +253,46 @@ function parseStartArgs(raw: unknown, reply: FastifyReply): StartSessionArgs | n
     reply.code(400).send({ error: 'missing_name' });
     return null;
   }
-  const catalog = b.catalog as DebugCatalog;
-  // OAL requires ruleName; MAL/LAL forbid it (per SWIP §4.2).
-  if (catalog === 'oal') {
-    if (typeof b.ruleName !== 'string' || b.ruleName.length === 0) {
-      reply.code(400).send({ error: 'missing_ruleName_for_oal' });
-      return null;
-    }
-  } else if (b.ruleName !== undefined && b.ruleName !== null) {
-    reply.code(400).send({ error: 'ruleName_only_for_oal' });
+  if (typeof b.ruleName !== 'string' || b.ruleName.length === 0) {
+    reply.code(400).send({ error: 'missing_ruleName' });
     return null;
   }
-
   const out: StartSessionArgs = {
     clientId: b.clientId,
-    catalog,
+    catalog: b.catalog as DebugCatalog,
     name: b.name,
+    ruleName: b.ruleName,
   };
-  if (catalog === 'oal' && typeof b.ruleName === 'string') out.ruleName = b.ruleName;
-
-  if (b.maxRecords !== undefined) {
-    if (typeof b.maxRecords !== 'number' || !Number.isFinite(b.maxRecords) || b.maxRecords <= 0) {
-      reply.code(400).send({ error: 'invalid_maxRecords' });
+  if (b.recordCap !== undefined) {
+    if (typeof b.recordCap !== 'number' || !Number.isFinite(b.recordCap) || b.recordCap <= 0) {
+      reply.code(400).send({ error: 'invalid_recordCap' });
       return null;
     }
-    out.maxRecords = b.maxRecords;
+    out.recordCap = b.recordCap;
   }
-  if (b.windowSec !== undefined) {
-    if (typeof b.windowSec !== 'number' || !Number.isFinite(b.windowSec) || b.windowSec <= 0) {
-      reply.code(400).send({ error: 'invalid_windowSec' });
+  if (b.retentionMillis !== undefined) {
+    if (
+      typeof b.retentionMillis !== 'number' ||
+      !Number.isFinite(b.retentionMillis) ||
+      b.retentionMillis <= 0
+    ) {
+      reply.code(400).send({ error: 'invalid_retentionMillis' });
       return null;
     }
-    out.windowSec = b.windowSec;
+    out.retentionMillis = b.retentionMillis;
   }
-  if (b.granularity !== undefined && b.granularity !== null) {
-    if (typeof b.granularity !== 'string' || !VALID_GRANULARITY.has(b.granularity as Granularity)) {
-      reply.code(400).send({ error: 'invalid_granularity', value: b.granularity });
-      return null;
-    }
-    if (catalog !== 'lal') {
-      reply.code(400).send({ error: 'granularity_only_for_lal' });
-      return null;
-    }
-    out.granularity = b.granularity as Granularity;
-  }
-  if (b.blocks !== undefined && b.blocks !== null) {
-    if (!Array.isArray(b.blocks)) {
-      reply.code(400).send({ error: 'invalid_blocks' });
-      return null;
-    }
-    if (catalog !== 'lal') {
-      reply.code(400).send({ error: 'blocks_only_for_lal' });
-      return null;
-    }
-    for (const blk of b.blocks) {
-      if (typeof blk !== 'string' || !VALID_LAL_BLOCKS.has(blk as LalBlock)) {
-        reply.code(400).send({ error: 'invalid_block', value: blk });
-        return null;
-      }
-    }
-    out.blocks = b.blocks as LalBlock[];
-  }
-
   return out;
 }
 
 function outcomeOf(err: unknown): string {
   if (err instanceof RuntimeRuleApiError) {
-    const body = err.body;
-    return typeof body === 'object' && body !== null && 'applyStatus' in body
-      ? body.applyStatus
-      : `http_${err.status}`;
+    const body: unknown = err.body;
+    if (typeof body === 'object' && body !== null) {
+      const o = body as Record<string, unknown>;
+      if (typeof o.code === 'string') return o.code;
+      if (typeof o.applyStatus === 'string') return o.applyStatus;
+    }
+    return `http_${err.status}`;
   }
   return 'oap_unreachable';
 }

@@ -47,11 +47,9 @@ const debugNodes = computed(() => debugStatusQuery.data.value?.nodes ?? []);
 function debugStatusBadgeTone(
   ok: boolean,
   injectionEnabled: boolean | undefined,
-  acceptingNew: boolean | undefined,
 ): 'ok' | 'warn' | 'err' | 'dim' {
   if (!ok) return 'err';
   if (injectionEnabled === false) return 'err';
-  if (acceptingNew === false) return 'warn';
   return 'ok';
 }
 
@@ -179,10 +177,8 @@ function nodeLabel(url: string): string {
             <th>node</th>
             <th>health</th>
             <th>injection</th>
-            <th>accepting new</th>
-            <th>active</th>
-            <th>probes</th>
-            <th>injection source</th>
+            <th>active sessions</th>
+            <th>module / phase</th>
           </tr>
         </thead>
         <tbody>
@@ -190,7 +186,7 @@ function nodeLabel(url: string): string {
             <td class="cs__dbgnode">{{ nodeLabel(n.url) }}</td>
             <td>
               <Pill
-                :tone="debugStatusBadgeTone(n.ok, n.status?.injectionEnabled, n.status?.sessionsAcceptingNewRequests)"
+                :tone="debugStatusBadgeTone(n.ok, n.status?.injectionEnabled)"
               >
                 {{ n.ok ? 'reachable' : 'unreachable' }}
               </Pill>
@@ -201,27 +197,14 @@ function nodeLabel(url: string): string {
               <Pill v-else-if="n.status?.injectionEnabled" tone="ok">enabled</Pill>
               <Pill v-else tone="err">disabled</Pill>
             </td>
-            <td>
-              <Pill v-if="!n.ok" tone="dim">—</Pill>
-              <Pill v-else-if="n.status?.sessionsAcceptingNewRequests" tone="ok">yes</Pill>
-              <Pill v-else tone="warn">no</Pill>
-            </td>
             <td class="cs__dbgnum">
               <template v-if="n.ok && n.status">
                 {{ n.status.activeSessions }}
-                <span class="cs__dbgmax">/ {{ n.status.maxActiveSessions }}</span>
-              </template>
-              <span v-else>—</span>
-            </td>
-            <td class="cs__dbgnum">
-              <template v-if="n.ok && n.status">
-                {{ n.status.ruleClassesWithProbes }}
-                <span class="cs__dbgmax">/ {{ n.status.ruleClassesTotal }}</span>
               </template>
               <span v-else>—</span>
             </td>
             <td class="cs__dbgsource">
-              <code v-if="n.ok && n.status?.injectionEnabledSource">{{ n.status.injectionEnabledSource }}</code>
+              <code v-if="n.ok && n.status">{{ n.status.module }} · {{ n.status.phase }}</code>
               <span v-else>—</span>
             </td>
           </tr>

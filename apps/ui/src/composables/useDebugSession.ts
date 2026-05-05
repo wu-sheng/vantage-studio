@@ -17,24 +17,30 @@
 /**
  * Reactive lifecycle wrapper around `/api/debug/*`.
  *
- * Caller passes a `widget` key (one of `mal`, `lal`, `oal`) plus a
- * computed function returning the spec to start with. The composable:
+ * The actual wire (see `reference_swip13_actual_wire.md`) doesn't have a
+ * top-level session status — `nodes[].status` is per-node and the
+ * recorder's `captured` boolean signals "session frozen". This composable
+ * computes a single UI-facing state by combining: install ack, every
+ * node's status, and the per-node `captured` flag.
  *
- *   - mints / reuses a stable clientId per widget (per browser tab),
- *   - sends `POST /api/debug/session` on `start()`,
- *   - polls `GET /api/debug/session/{id}` while CAPTURING (~1 s
- *     interval until terminal), then stops polling,
- *   - exposes `start`, `stop`, `restart`, `session` (the latest
- *     response), `state` (idle | starting | capturing | captured |
- *     stopped | error), and `error`.
+ * UI states:
+ *   - idle     — never started
+ *   - starting — POST /session in flight
+ *   - capturing — at least one node is `status: ok` and not captured
+ *   - captured  — every reachable node is captured
+ *   - stopped   — operator hit Stop (response received, polling halted)
+ *   - error     — start failed
  *
- * Polling stops automatically once the server reports a terminal
- * status. The session payload is stable across post-terminal polls
- * per SWIP-13 §5; we keep the latest one rendered.
+ * Polling cadence: 1 s while `capturing`, then halts on terminal.
  */
 
 import { computed, onScopeDispose, ref, type Ref } from 'vue';
-import type { SessionResponse, StartSessionArgs } from '@vantage-studio/api-client';
+import type {
+  PeerInstallAck,
+  PriorCleanupOutcome,
+  SessionResponse,
+  StartSessionArgs,
+} from '@vantage-studio/api-client';
 import { bff } from '../api/client.js';
 import { getClientId } from './useClientId.js';
 
@@ -46,7 +52,6 @@ export type DebugState =
   | 'capturing'
   | 'captured'
   | 'stopped'
-  | 'expired'
   | 'error';
 
 export interface UseDebugSessionResult {
@@ -56,10 +61,13 @@ export interface UseDebugSessionResult {
   sessionId: Ref<string | null>;
   /** Set when state === 'error'. */
   error: Ref<string | null>;
-  /** Per-peer install ack list from the most recent start call. */
-  peerAcks: Ref<{ nodeId: string; ack: 'ok' | 'install_failed' | 'timeout' }[]>;
-  /** Set when the start response reported a prior session was
-   *  terminated (cluster-scope StopByClientId footprint). */
+  /** Per-peer install acks from the most recent start call. */
+  peerAcks: Ref<PeerInstallAck[]>;
+  /** Per-peer cleanup outcomes from the StopByClientId broadcast that
+   *  ran before the session was allocated. */
+  priorCleanup: Ref<PriorCleanupOutcome[]>;
+  /** Convenience flat list of every prior session id that was
+   *  terminated by the cleanup, derived from `priorCleanup`. */
   replacedPriorIds: Ref<string[]>;
   /** Allocate a new session. Discards any prior local state. */
   start(args: Omit<StartSessionArgs, 'clientId'>): Promise<void>;
@@ -69,14 +77,38 @@ export interface UseDebugSessionResult {
 
 const POLL_INTERVAL_MS = 1000;
 
+/** Decide the UI-facing state from a polled SessionResponse. */
+function deriveState(resp: SessionResponse): 'capturing' | 'captured' {
+  // The wire doesn't have a top-level status; combine per-node flags.
+  // If every reachable node is captured (or unreachable / not_local),
+  // there's nothing more coming — treat as captured.
+  const reachable = resp.nodes.filter(
+    (n) => n.status === 'ok' || n.status === 'captured',
+  );
+  if (reachable.length === 0) {
+    // No-one's contributing data; nothing to wait for.
+    return 'captured';
+  }
+  const allCaptured = reachable.every((n) => n.status === 'captured' || n.captured === true);
+  return allCaptured ? 'captured' : 'capturing';
+}
+
 export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
   const clientId = getClientId(widget);
   const state = ref<DebugState>('idle');
   const session = ref<SessionResponse | null>(null);
   const sessionId = ref<string | null>(null);
   const error = ref<string | null>(null);
-  const peerAcks = ref<{ nodeId: string; ack: 'ok' | 'install_failed' | 'timeout' }[]>([]);
-  const replacedPriorIds = ref<string[]>([]);
+  const peerAcks = ref<PeerInstallAck[]>([]);
+  const priorCleanup = ref<PriorCleanupOutcome[]>([]);
+
+  const replacedPriorIds = computed<string[]>(() => {
+    const out: string[] = [];
+    for (const c of priorCleanup.value) {
+      if (c.stoppedSessionIds) out.push(...c.stoppedSessionIds);
+    }
+    return out;
+  });
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let pollGeneration = 0;
@@ -104,24 +136,17 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
       const got = await bff.debugSession(id);
       if (gen !== pollGeneration) return;
       if (got === null) {
-        state.value = 'expired';
+        // Session went past retention; freeze whatever we last saw and
+        // surface as captured (we kept the last poll's records).
+        state.value = 'captured';
         clearTimer();
         return;
       }
       session.value = got;
-      if (got.status === 'capturing') {
-        state.value = 'capturing';
-        schedulePoll();
-      } else if (got.status === 'captured') {
-        state.value = 'captured';
-        // SWIP §5: post-CAPTURED polls return identical bytes; one
-        // last refresh is enough. Stop polling.
-        clearTimer();
-      } else {
-        // Treat any non-listed status as a terminal idle.
-        state.value = 'expired';
-        clearTimer();
-      }
+      const next = deriveState(got);
+      state.value = next;
+      if (next === 'capturing') schedulePoll();
+      else clearTimer();
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
       state.value = 'error';
@@ -137,16 +162,13 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     session.value = null;
     sessionId.value = null;
     peerAcks.value = [];
-    replacedPriorIds.value = [];
+    priorCleanup.value = [];
 
     try {
       const r = await bff.debugStart({ clientId, ...args });
       sessionId.value = r.sessionId;
       peerAcks.value = r.peers ?? [];
-      const replaced: string[] = [];
-      if (r.replacedPriorId) replaced.push(r.replacedPriorId);
-      if (r.replacedPriorIds) replaced.push(...r.replacedPriorIds);
-      replacedPriorIds.value = replaced;
+      priorCleanup.value = r.priorCleanup ?? [];
       state.value = 'capturing';
       // First poll immediately so the operator sees something fast.
       void poll(pollGeneration);
@@ -167,6 +189,14 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     try {
       await bff.debugStop(id);
       state.value = 'stopped';
+      // Refresh once so the post-stop "not_local" status surfaces in
+      // the UI.
+      try {
+        const after = await bff.debugSession(id);
+        if (after !== null) session.value = after;
+      } catch {
+        // ignore — stop already succeeded.
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : describeError(err);
       state.value = 'error';
@@ -185,6 +215,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     sessionId: computed(() => sessionId.value) as Ref<string | null>,
     error,
     peerAcks,
+    priorCleanup,
     replacedPriorIds,
     start,
     stop,
@@ -194,8 +225,12 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
 function describeError(err: unknown): string {
   if (typeof err === 'object' && err !== null && 'status' in err) {
     const e = err as { status: number; body: unknown };
-    if (typeof e.body === 'object' && e.body !== null && 'message' in e.body) {
-      return `${e.status}: ${(e.body as { message: string }).message}`;
+    if (typeof e.body === 'object' && e.body !== null) {
+      const o = e.body as Record<string, unknown>;
+      if (typeof o.code === 'string' && typeof o.message === 'string') {
+        return `${e.status} (${o.code}): ${o.message}`;
+      }
+      if (typeof o.message === 'string') return `${e.status}: ${o.message}`;
     }
     return `HTTP ${e.status}`;
   }
