@@ -73,14 +73,21 @@ export interface StartSessionQuery {
    *  debugger widget into sessionStorage and reuses it across polls. */
   clientId: string;
   catalog: DebugCatalog;
-  /** For LAL: file name with extension (e.g. `default.yaml`).
-   *  For MAL: rule name (matches `/runtime/rule/list` row's `name`).
+  /** For LAL: file name with extension (e.g. `default.yaml`); for
+   *  runtime-rule-applied LAL the upstream uses the rule name as both
+   *  `name` and `ruleName`.
+   *  For MAL: the rule's `name` from `/runtime/rule/list`.
    *  For OAL: source class name (e.g. `Endpoint`). */
   name: string;
-  /** For LAL: the rule within the file.
-   *  For MAL: typically the same as `name`.
+  /** For LAL: the rule within the file (or the rule name for
+   *  runtime-rule LAL).
+   *  For MAL: the metric's full name (matches the holder lookup key).
    *  For OAL: the source class name (same value as `name`). */
   ruleName: string;
+  /** Per-DSL capture granularity. Currently only LAL distinguishes
+   *  block vs statement; MAL/OAL ignore the flag server-side.
+   *  Defaults to `block`. */
+  granularity?: Granularity;
 }
 
 /** Optional JSON body for `POST /dsl-debugging/session`. */
@@ -90,6 +97,17 @@ export interface StartSessionBody {
   recordCap?: number;
   /** Default 5 min. Wall-clock retention before the session is reaped. */
   retentionMillis?: number;
+}
+
+/** LAL-only knob — does the recorder also emit per-statement `line`
+ *  records, or just the block stages (text / parser / extractor /
+ *  outputRecord / outputMetric). Server query param wins over body. */
+export type Granularity = 'block' | 'statement';
+
+export const GRANULARITIES: readonly Granularity[] = ['block', 'statement'] as const;
+
+export function isGranularity(v: unknown): v is Granularity {
+  return v === 'block' || v === 'statement';
 }
 
 export type StartSessionArgs = StartSessionQuery & StartSessionBody;
@@ -129,6 +147,8 @@ export interface StartSessionResponse {
   createdAt: number;
   /** Unix-ms. The session is reaped at this wall-clock. */
   retentionDeadline: number;
+  /** Echoed back from the request (or the server default `block`). */
+  granularity: Granularity;
   peers: PeerInstallAck[];
   priorCleanup: PriorCleanupOutcome[];
 }
@@ -335,8 +355,10 @@ export class DslDebuggingClient {
     this.timeoutMs = options.timeoutMs ?? 0;
   }
 
-  /** `POST /dsl-debugging/session?catalog=&name=&ruleName=&clientId=`,
-   *  optional JSON body with `recordCap` / `retentionMillis`. */
+  /** `POST /dsl-debugging/session?catalog=&name=&ruleName=&clientId=
+   *  [&granularity=]`, optional JSON body with `recordCap` /
+   *  `retentionMillis`. The query param wins over the body for
+   *  granularity (matches upstream resolution order). */
   async startSession(args: StartSessionArgs): Promise<StartSessionResponse> {
     const params = new URLSearchParams({
       catalog: args.catalog,
@@ -344,6 +366,7 @@ export class DslDebuggingClient {
       ruleName: args.ruleName,
       clientId: args.clientId,
     });
+    if (args.granularity !== undefined) params.set('granularity', args.granularity);
     const url = `${this.base}/dsl-debugging/session?${params.toString()}`;
     const body: StartSessionBody = {};
     if (args.recordCap !== undefined) body.recordCap = args.recordCap;

@@ -121,6 +121,7 @@ const sampleStartResponse = {
   ruleKey: { catalog: 'lal', name: 'default.yaml', ruleName: 'default' },
   createdAt: 1700000000000,
   retentionDeadline: 1700000300000,
+  granularity: 'block',
   peers: [{ peer: 'oap-2:11800', nodeId: 'oap-02', ack: 'INSTALLED' }],
   priorCleanup: [],
 };
@@ -212,6 +213,70 @@ describe('debug-routes — POST /api/debug/session', () => {
     });
     expect(r.statusCode).toBe(400);
     expect(r.json().error).toBe('invalid_catalog');
+  });
+
+  it('threads granularity into the upstream query string', async () => {
+    ctx = await makeApp({
+      start: (_init, url) => {
+        expect(url).toContain('granularity=statement');
+        return jsonResponse({ ...sampleStartResponse, granularity: 'statement' });
+      },
+    });
+    const r = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/debug/session',
+      headers: { cookie: `sid=${ctx.sid}` },
+      payload: {
+        clientId: 'tab-1',
+        catalog: 'lal',
+        name: 'default.yaml',
+        ruleName: 'default',
+        granularity: 'statement',
+      },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().granularity).toBe('statement');
+    const startEvents = ctx.audit.events.filter((e) => e.action === 'debug.start');
+    expect(startEvents[0]!.details).toMatchObject({ granularity: 'statement' });
+  });
+
+  it('rejects an invalid granularity value', async () => {
+    ctx = await makeApp({});
+    const r = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/debug/session',
+      headers: { cookie: `sid=${ctx.sid}` },
+      payload: {
+        clientId: 'tab-1',
+        catalog: 'lal',
+        name: 'default.yaml',
+        ruleName: 'default',
+        granularity: 'verbose',
+      },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error).toBe('invalid_granularity');
+  });
+
+  it('omits granularity from the upstream URL when not supplied', async () => {
+    ctx = await makeApp({
+      start: (_init, url) => {
+        expect(url).not.toContain('granularity=');
+        return jsonResponse(sampleStartResponse);
+      },
+    });
+    const r = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/debug/session',
+      headers: { cookie: `sid=${ctx.sid}` },
+      payload: {
+        clientId: 'tab-1',
+        catalog: 'lal',
+        name: 'default.yaml',
+        ruleName: 'default',
+      },
+    });
+    expect(r.statusCode).toBe(200);
   });
 
   it('rejects negative recordCap', async () => {

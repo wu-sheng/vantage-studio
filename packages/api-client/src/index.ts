@@ -34,9 +34,12 @@ export {
 export {
   DslDebuggingClient,
   DEBUG_CATALOGS,
+  GRANULARITIES,
   isDebugCatalog,
+  isGranularity,
   type DslDebuggingClientOptions,
   type DebugCatalog,
+  type Granularity,
   type StartSessionArgs,
   type StartSessionQuery,
   type StartSessionBody,

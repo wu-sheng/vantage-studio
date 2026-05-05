@@ -34,8 +34,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   RuntimeRuleApiError,
   isDebugCatalog,
+  isGranularity,
   type DebugCatalog,
   type DslDebuggingStatus,
+  type Granularity,
   type StartSessionArgs,
 } from '@vantage-studio/api-client';
 import type { ConfigHandle } from '../config/loader.js';
@@ -88,6 +90,7 @@ export function registerDebugRoutes(app: FastifyInstance, deps: DebugRouteDeps):
             catalog: parsed.catalog,
             name: parsed.name,
             ruleName: parsed.ruleName,
+            granularity: result.granularity,
             recordCap: parsed.recordCap,
             retentionMillis: parsed.retentionMillis,
             priorCleanupCount: result.priorCleanup.length,
@@ -263,6 +266,13 @@ function parseStartArgs(raw: unknown, reply: FastifyReply): StartSessionArgs | n
     name: b.name,
     ruleName: b.ruleName,
   };
+  if (b.granularity !== undefined) {
+    if (!isGranularity(b.granularity)) {
+      reply.code(400).send({ error: 'invalid_granularity', value: b.granularity });
+      return null;
+    }
+    out.granularity = b.granularity as Granularity;
+  }
   if (b.recordCap !== undefined) {
     if (typeof b.recordCap !== 'number' || !Number.isFinite(b.recordCap) || b.recordCap <= 0) {
       reply.code(400).send({ error: 'invalid_recordCap' });

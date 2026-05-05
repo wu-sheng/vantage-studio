@@ -36,6 +36,7 @@
 import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import type {
+  Granularity,
   LalPayload,
   ListEnvelope,
   NodeSlice,
@@ -52,8 +53,12 @@ import { isLalPayload, isLalRecord, shortHash } from './payload.js';
 const dbg = useDebugSession('lal');
 const selectedRule = ref<string>('');
 /** LAL's file naming isn't surfaced by /runtime/rule/list; default to
- *  `<ruleName>.yaml` and let the operator override. */
+ *  `<ruleName>.yaml` and let the operator override. Runtime-rule-applied
+ *  LAL uses the rule name as both `name` and `ruleName`, so this field
+ *  can be left as-is in that case (the upstream tolerates the .yaml
+ *  suffix matching the rule name). */
 const fileName = ref<string>('');
+const granularity = ref<Granularity>('block');
 const recordCap = ref<number>(1000);
 const retentionMinutes = ref<number>(5);
 
@@ -95,6 +100,7 @@ async function startSampling(): Promise<void> {
     catalog: 'lal',
     name: fileName.value,
     ruleName: selectedRule.value,
+    granularity: granularity.value,
     recordCap: recordCap.value,
     retentionMillis: retentionMinutes.value * 60 * 1000,
   });
@@ -150,6 +156,23 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
       <div class="lal__field">
         <label class="lal__label">file (with extension)</label>
         <input v-model="fileName" type="text" class="lal__input lal__input--wide" placeholder="default.yaml" />
+      </div>
+      <div class="lal__field">
+        <label class="lal__label">granularity</label>
+        <div class="lal__granularity">
+          <button
+            type="button"
+            class="lal__granbtn"
+            :class="{ 'lal__granbtn--active': granularity === 'block' }"
+            @click="granularity = 'block'"
+          >block</button>
+          <button
+            type="button"
+            class="lal__granbtn"
+            :class="{ 'lal__granbtn--active': granularity === 'statement' }"
+            @click="granularity = 'statement'"
+          >statement</button>
+        </div>
       </div>
       <div class="lal__field">
         <label class="lal__label">recordCap</label>
@@ -306,6 +329,31 @@ function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
 
 .lal__input--wide {
   width: 200px;
+}
+
+.lal__granularity {
+  display: inline-flex;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg2);
+}
+
+.lal__granbtn {
+  background: transparent;
+  border: 0;
+  color: var(--rr-ink2);
+  padding: 4px 10px;
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lal__granbtn--active {
+  background: var(--rr-bg3);
+  color: var(--rr-heading);
+}
+
+.lal__granbtn:not(.lal__granbtn--active):hover {
+  background: var(--rr-bg3);
 }
 
 .lal__statepill {
