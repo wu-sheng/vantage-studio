@@ -24,18 +24,23 @@ import { computed, ref } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import type {
   Granularity,
-  LalPayload,
+  LalBlockPayload,
   ListEnvelope,
   NodeSlice,
   SessionRecord,
-  Stage,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
-import { isLalPayload, isLalRecord, shortHash, stageTone } from './payload.js';
+import {
+  isLalBlockPayload,
+  isLalLinePayload,
+  isLalRecord,
+  shortHash,
+  stageTone,
+} from './payload.js';
 
 const dbg = useDebugSession('lal');
 const selectedRule = ref<string>('');
@@ -88,7 +93,14 @@ async function startSampling(): Promise<void> {
 
 interface LalRow {
   rec: SessionRecord;
-  payload: LalPayload | null;
+  /** Block-stage flat body. Set on text / parser / extractor /
+   *  outputRecord / outputMetric records. For `line` records this
+   *  pulls the wrapped body out of `payload.body` so the template
+   *  renders the same fields uniformly. */
+  body: LalBlockPayload | null;
+  /** 1-based source line. Only set on `line` stage records (statement
+   *  granularity); null for block stages. */
+  sourceLine: number | null;
 }
 
 interface LalNodeView extends NodeSlice {
@@ -102,7 +114,13 @@ const nodeViews = computed<LalNodeView[]>(() => {
     const rows: LalRow[] = [];
     for (const rec of n.records ?? []) {
       if (!isLalRecord(rec)) continue;
-      rows.push({ rec, payload: isLalPayload(rec.payload) ? rec.payload : null });
+      if (rec.stage === 'line' && isLalLinePayload(rec.payload)) {
+        rows.push({ rec, body: rec.payload.body, sourceLine: rec.payload.sourceLine });
+      } else if (isLalBlockPayload(rec.payload)) {
+        rows.push({ rec, body: rec.payload, sourceLine: null });
+      } else {
+        rows.push({ rec, body: null, sourceLine: null });
+      }
     }
     return { ...n, rows };
   });
@@ -181,29 +199,29 @@ function nodeKey(n: NodeSlice): string {
         </thead>
         <tbody>
           <tr v-for="(row, idx) in node.rows" :key="`${nodeKey(node)}-${idx}`">
-            <td class="lal__line">{{ row.payload?.sourceLine ?? '—' }}</td>
+            <td class="lal__line">{{ row.sourceLine ?? '—' }}</td>
             <td class="lal__source"><code>{{ row.rec.sourceText }}</code></td>
             <td class="lal__kind">
               <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
             </td>
             <td class="lal__result">
-              <template v-if="row.payload">
+              <template v-if="row.body">
                 <div class="lal__flags">
-                  <span v-if="row.payload.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
-                  <span v-if="row.payload.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
-                  <span v-if="row.payload.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
+                  <span v-if="row.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
+                  <span v-if="row.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
+                  <span v-if="row.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
                 </div>
               </template>
             </td>
             <td class="lal__extra">
-              <template v-if="row.payload?.body.extra">
-                <div v-if="row.payload.body.extra.outputClass" class="lal__extraitem">
+              <template v-if="row.body?.extra">
+                <div v-if="row.body.extra.outputClass" class="lal__extraitem">
                   <span class="lal__lbl">class</span>
-                  <code>{{ row.payload.body.extra.outputClass }}</code>
+                  <code>{{ row.body.extra.outputClass }}</code>
                 </div>
-                <div v-if="row.payload.body.extra.samples !== undefined" class="lal__extraitem">
+                <div v-if="row.body.extra.samples !== undefined" class="lal__extraitem">
                   <span class="lal__lbl">samples</span>
-                  {{ row.payload.body.extra.samples }}
+                  {{ row.body.extra.samples }}
                 </div>
               </template>
             </td>

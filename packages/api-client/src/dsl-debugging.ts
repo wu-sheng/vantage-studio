@@ -197,21 +197,29 @@ export interface MalMeterPayload {
   timeBucket?: number;
 }
 
-/** LAL payload — the recorder wraps the per-stage body in this shape so
- *  every LAL record carries its source line + a stage-specific extra. */
-export interface LalPayload {
-  sourceLine: number;
-  body: {
-    aborted?: boolean;
-    hasOutput?: boolean;
-    hasParsed?: boolean;
-    extra?: {
-      /** `outputRecord` only — concrete builder class name. */
-      outputClass?: string;
-      /** `outputMetric` only — sample count handed to MAL. */
-      samples?: number;
-    };
+/** LAL block-stage payload — text / parser / extractor / outputRecord
+ *  / outputMetric. The upstream emits these flat (no `sourceLine`
+ *  wrapper) because block stages aren't tied to a single statement;
+ *  the verbatim `record.sourceText` is the locator. */
+export interface LalBlockPayload {
+  aborted?: boolean;
+  hasOutput?: boolean;
+  hasParsed?: boolean;
+  extra?: {
+    /** `outputRecord` only — concrete builder class name. */
+    outputClass?: string;
+    /** `outputMetric` only — sample count handed to MAL. */
+    samples?: number;
   };
+}
+
+/** LAL line-stage payload — only the `line` stage carries this shape,
+ *  and only when the session was started with `granularity=statement`.
+ *  `sourceLine` is 1-based and identifies the exact DSL statement that
+ *  fired. The body re-uses `LalBlockPayload` for consistency. */
+export interface LalLinePayload {
+  sourceLine: number;
+  body: LalBlockPayload;
 }
 
 /** OAL source / filter payload. */
@@ -230,24 +238,32 @@ export interface OalMetricsPayload {
 export type RecordPayload =
   | MalSamplesPayload
   | MalMeterPayload
-  | LalPayload
+  | LalBlockPayload
+  | LalLinePayload
   | OalSourcePayload
   | OalMetricsPayload;
 
 /** A single captured probe sample. The `stage` field discriminates the
- *  `payload` shape — see the per-DSL payload types above. */
+ *  `payload` shape — see the per-DSL payload types above.
+ *
+ *  No per-record timestamp: probes fire at clock-tick speed and array
+ *  order preserves intra-slice ordering. The session response carries
+ *  one top-level `capturedAt` stamped when the slice was snapshotted. */
 export interface SessionRecord {
   stage: Stage;
-  /** Verbatim DSL fragment (or pseudo-fragment for LAL non-line stages
-   *  like `"raw"`, `"parsed"`, `"fields"`). */
+  /** Verbatim DSL fragment from ANTLR's input stream. For MAL chain
+   *  stages this is the full call form `sum(['service_name', 'step'])`,
+   *  not just `sum`; for OAL filter records it's `filter(detectPoint
+   *  == DetectPoint.SERVER)` etc. — byte-for-byte matchable against
+   *  the source. LAL block stages use pseudo-fragments (`"raw"`,
+   *  `"parsed"`, `"fields"`) since those probes don't correspond to a
+   *  single DSL line. */
   sourceText: string;
   /** SHA-256 hex of the rule content the holder was bound to. Stable
    *  per holder; a hot-update mid-session creates a new holder with a
    *  new hash, and pre-update records keep the old hash so the UI can
    *  render the matching rule version. */
   contentHash: string;
-  /** Unix-ms. */
-  capturedAt: number;
   payload: RecordPayload;
 }
 
@@ -271,6 +287,11 @@ export interface NodeSlice {
 
 export interface SessionResponse {
   sessionId: string;
+  /** Unix-ms when the receiving node snapshotted the slice. Replaces
+   *  the per-record `capturedAt` that earlier wire revisions carried —
+   *  one stamp per snapshot is enough since records are appended at
+   *  clock-tick speed and array order preserves intra-slice ordering. */
+  capturedAt: number;
   nodes: NodeSlice[];
 }
 

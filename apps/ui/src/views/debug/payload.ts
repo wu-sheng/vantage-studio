@@ -18,7 +18,8 @@
  */
 
 import type {
-  LalPayload,
+  LalBlockPayload,
+  LalLinePayload,
   MalMeterPayload,
   MalSamplesPayload,
   OalMetricsPayload,
@@ -64,7 +65,12 @@ export function isMalRecord(rec: SessionRecord): boolean {
 }
 
 export function isLalRecord(rec: SessionRecord): boolean {
-  return LAL_STAGES.has(rec.stage) && isLalPayload(rec.payload);
+  if (!LAL_STAGES.has(rec.stage)) return false;
+  // `line` records carry the wrapped {sourceLine, body} shape; block
+  // stages carry the flat body directly. Either is acceptable.
+  return rec.stage === 'line'
+    ? isLalLinePayload(rec.payload)
+    : isLalBlockPayload(rec.payload);
 }
 
 export function isOalRecord(rec: SessionRecord): boolean {
@@ -83,9 +89,22 @@ export function isMalMeterPayload(p: RecordPayload): p is MalMeterPayload {
   return 'metric' in p && 'entity' in p && 'value' in p;
 }
 
-export function isLalPayload(p: RecordPayload): p is LalPayload {
+/** LAL `line` stage payload: `{ sourceLine, body: {...} }`. */
+export function isLalLinePayload(p: RecordPayload): p is LalLinePayload {
   if (typeof p !== 'object' || p === null) return false;
   return 'sourceLine' in p && 'body' in p;
+}
+
+/** LAL block-stage payload: flat `{ aborted?, hasOutput?, hasParsed?,
+ *  extra? }` — emitted by text / parser / extractor / outputRecord /
+ *  outputMetric. */
+export function isLalBlockPayload(p: RecordPayload): p is LalBlockPayload {
+  if (typeof p !== 'object' || p === null) return false;
+  if ('sourceLine' in p) return false; // that's a line record
+  // Heuristic: all the boolean ctx flags are optional; require the
+  // payload to look like a context summary by accepting empty bodies
+  // too (minimal upstream may emit `{}` for trivial probes).
+  return true;
 }
 
 export function isOalSourcePayload(p: RecordPayload): p is OalSourcePayload {
