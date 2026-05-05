@@ -22,6 +22,8 @@ export interface StatusClientOptions {
   statusUrl: string;
   fetch?: FetchLike;
   headers?: Record<string, string>;
+  /** Per-call timeout in ms. 0 disables. Default 0. */
+  timeoutMs?: number;
 }
 
 /** Cluster node with both wire spellings of the self-flag normalised
@@ -41,20 +43,34 @@ export class StatusClient {
   private readonly fetchImpl: FetchLike;
   private readonly base: string;
   private readonly defaultHeaders: Record<string, string>;
+  private readonly timeoutMs: number;
 
   constructor(options: StatusClientOptions) {
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.base = options.statusUrl.replace(/\/$/, '');
     this.defaultHeaders = options.headers ?? {};
+    this.timeoutMs = options.timeoutMs ?? 0;
   }
 
   /** `GET /status/cluster/nodes` — returns the OAP cluster member list. */
   async clusterNodes(): Promise<NormalisedClusterNode[]> {
     const url = `${this.base}/status/cluster/nodes`;
-    const res = await this.fetchImpl(url, {
+    const init: RequestInit = {
       method: 'GET',
       headers: { Accept: 'application/json', ...this.defaultHeaders },
-    });
+    };
+    let res: Response;
+    if (this.timeoutMs > 0) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        res = await this.fetchImpl(url, { ...init, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    } else {
+      res = await this.fetchImpl(url, init);
+    }
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`StatusClient.clusterNodes: ${res.status} on ${url} — ${body}`);

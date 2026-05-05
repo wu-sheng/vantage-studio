@@ -66,24 +66,28 @@ export function buildOapClients(
 ): OapClients {
   const fetch = opts.fetch;
   const primaryUrl = config.oap.adminUrls[0]!;
+  // Single source of truth for per-call timeout — every client
+  // constructed via this factory inherits it. 0 means no timeout
+  // (passed through verbatim to the clients).
+  const timeoutMs = config.oap.timeoutMs;
   return {
     forUrl(adminUrl: string): RuntimeRuleClient {
-      return new RuntimeRuleClient({ adminUrl, fetch });
+      return new RuntimeRuleClient({ adminUrl, fetch, timeoutMs });
     },
     primary(): RuntimeRuleClient {
-      return new RuntimeRuleClient({ adminUrl: primaryUrl, fetch });
+      return new RuntimeRuleClient({ adminUrl: primaryUrl, fetch, timeoutMs });
     },
     status(): StatusClient {
-      return new StatusClient({ statusUrl: config.oap.statusUrl, fetch });
+      return new StatusClient({ statusUrl: config.oap.statusUrl, fetch, timeoutMs });
     },
     oal(): OalClient {
-      return new OalClient({ adminUrl: primaryUrl, fetch });
+      return new OalClient({ adminUrl: primaryUrl, fetch, timeoutMs });
     },
     debug(): DslDebuggingClient {
-      return new DslDebuggingClient({ adminUrl: primaryUrl, fetch });
+      return new DslDebuggingClient({ adminUrl: primaryUrl, fetch, timeoutMs });
     },
     debugForUrl(adminUrl: string): DslDebuggingClient {
-      return new DslDebuggingClient({ adminUrl, fetch });
+      return new DslDebuggingClient({ adminUrl, fetch, timeoutMs });
     },
     adminUrls(): readonly string[] {
       return config.oap.adminUrls;

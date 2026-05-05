@@ -62,6 +62,10 @@ const OapConfig = z.object({
   adminUrls: z.array(z.string().url()).min(1),
   /** OAP query/status URL — port 12800 in upstream defaults. */
   statusUrl: z.string().url(),
+  /** Per-call timeout (ms) for every BFF→OAP request. 0 disables.
+   *  Default 10s — long enough for the dump streams; short enough
+   *  that a hung OAP doesn't stall the UI indefinitely. */
+  timeoutMs: z.number().int().nonnegative().default(10_000),
 });
 
 const LocalUser = z.object({
