@@ -273,6 +273,72 @@ export function registerOapRoutes(app: FastifyInstance, deps: OapRouteDeps): voi
       return dumpHandler(params.catalog)(req, reply);
     },
   );
+
+  // ── OAL read-only browse (SWIP-13 §4.1) ──────────────────────────
+  // Read-only — no audit. Same `rule:read` verb gates as runtime-rule
+  // catalog browse. OAL hot-update is intentionally out of scope.
+
+  app.get(
+    '/api/oal/files',
+    { preHandler: auth },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!ensureVerb(req, reply, deps, 'rule:read')) return;
+      try {
+        const list = await clients().oal().listFiles();
+        return reply.send(list);
+      } catch (err) {
+        return passOapError(err, reply);
+      }
+    },
+  );
+
+  app.get(
+    '/api/oal/files/:name',
+    { preHandler: auth },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!ensureVerb(req, reply, deps, 'rule:read')) return;
+      const params = req.params as { name: string };
+      if (!params.name) return reply.code(400).send({ error: 'missing_name' });
+      try {
+        const file = await clients().oal().getFile(params.name);
+        if (file === null) return reply.code(404).send({ error: 'not_found' });
+        return reply.send(file);
+      } catch (err) {
+        return passOapError(err, reply);
+      }
+    },
+  );
+
+  app.get(
+    '/api/oal/rules',
+    { preHandler: auth },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!ensureVerb(req, reply, deps, 'rule:read')) return;
+      try {
+        const rules = await clients().oal().listRules();
+        return reply.send(rules);
+      } catch (err) {
+        return passOapError(err, reply);
+      }
+    },
+  );
+
+  app.get(
+    '/api/oal/rules/:ruleName',
+    { preHandler: auth },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!ensureVerb(req, reply, deps, 'rule:read')) return;
+      const params = req.params as { ruleName: string };
+      if (!params.ruleName) return reply.code(400).send({ error: 'missing_rule_name' });
+      try {
+        const rule = await clients().oal().getRule(params.ruleName);
+        if (rule === null) return reply.code(404).send({ error: 'not_found' });
+        return reply.send(rule);
+      } catch (err) {
+        return passOapError(err, reply);
+      }
+    },
+  );
 }
 
 // ── helpers ─────────────────────────────────────────────────────────

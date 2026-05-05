@@ -60,6 +60,12 @@ const routes: RouteRecordRaw[] = [
     meta: { layout: 'main', requiresAuth: true },
   },
   {
+    path: '/oal',
+    name: 'oal-catalog',
+    component: () => import('./views/OalCatalog.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('./views/NotFound.vue'),

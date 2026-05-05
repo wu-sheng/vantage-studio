@@ -23,3 +23,12 @@ export {
   type FetchLike,
 } from './runtime-rule.js';
 export { StatusClient, type StatusClientOptions, type NormalisedClusterNode } from './status.js';
+export {
+  OalClient,
+  type OalClientOptions,
+  type OalFileListing,
+  type OalFileDetail,
+  type OalRuleSnapshot,
+  type OalFilterSnapshot,
+  type OalFileStatus,
+} from './oal.js';

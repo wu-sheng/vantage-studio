@@ -21,18 +21,29 @@
  * config hot-reload picks up new admin URLs without restart.
  */
 
-import { RuntimeRuleClient, StatusClient, type FetchLike } from '@vantage-studio/api-client';
+import {
+  OalClient,
+  RuntimeRuleClient,
+  StatusClient,
+  type FetchLike,
+} from '@vantage-studio/api-client';
 import type { StudioConfig } from '../config/schema.js';
 
 export interface OapClients {
-  /** Build a client for one specific admin URL — used by the cluster
-   *  fan-out, which talks to every URL. */
+  /** Build a runtime-rule client for one specific admin URL — used
+   *  by the cluster fan-out, which talks to every URL. */
   forUrl(adminUrl: string): RuntimeRuleClient;
-  /** Convenience — client for the *first* admin URL, used for reads
-   *  and for writes (OAP's forward-RPC handles peer convergence). */
+  /** Convenience — runtime-rule client for the *first* admin URL,
+   *  used for reads and for writes (OAP's forward-RPC handles peer
+   *  convergence). */
   primary(): RuntimeRuleClient;
   /** Status / cluster-discovery client — port 12800. */
   status(): StatusClient;
+  /** OAL read-only management client for the *first* admin URL.
+   *  OAL listing is per-node and identical across nodes (modulo
+   *  binary-version drift, which is operator deployment discipline);
+   *  the BFF doesn't fan-out for the catalog browse. */
+  oal(): OalClient;
   /** All admin URLs, in config order. */
   adminUrls(): readonly string[];
 }
@@ -46,16 +57,19 @@ export function buildOapClients(
   opts: BuildOapClientsOptions = {},
 ): OapClients {
   const fetch = opts.fetch;
+  const primaryUrl = config.oap.adminUrls[0]!;
   return {
     forUrl(adminUrl: string): RuntimeRuleClient {
       return new RuntimeRuleClient({ adminUrl, fetch });
     },
     primary(): RuntimeRuleClient {
-      const url = config.oap.adminUrls[0]!;
-      return new RuntimeRuleClient({ adminUrl: url, fetch });
+      return new RuntimeRuleClient({ adminUrl: primaryUrl, fetch });
     },
     status(): StatusClient {
       return new StatusClient({ statusUrl: config.oap.statusUrl, fetch });
+    },
+    oal(): OalClient {
+      return new OalClient({ adminUrl: primaryUrl, fetch });
     },
     adminUrls(): readonly string[] {
       return config.oap.adminUrls;

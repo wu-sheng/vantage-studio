@@ -30,6 +30,9 @@ import type {
   DeleteMode,
   ListEnvelope,
   LocalState,
+  OalFileDetail,
+  OalFileListing,
+  OalRuleSnapshot,
   RuleResponse,
   RuleSource,
   RuleStatus,
@@ -195,6 +198,43 @@ export class BffClient {
    *  per-node matrix with a `converged` boolean. */
   async clusterState(): Promise<ClusterStateResponse> {
     return this.request<ClusterStateResponse>('GET', '/api/cluster/state');
+  }
+
+  /** `GET /api/oal/files` — read-only listing of loaded `.oal`
+   *  files (SWIP-13 §4.1). One row per file with `contentHash` for
+   *  matching against live-debugger captures. */
+  async oalFiles(): Promise<OalFileListing[]> {
+    return this.request<OalFileListing[]>('GET', '/api/oal/files');
+  }
+
+  /** `GET /api/oal/files/{name}` — file detail with raw `.oal` text
+   *  + parsed rules. Returns `null` on 404. */
+  async oalFile(name: string): Promise<OalFileDetail | null> {
+    try {
+      return await this.request<OalFileDetail>('GET', `/api/oal/files/${encodeURIComponent(name)}`);
+    } catch (err) {
+      if (isApiError(err) && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** `GET /api/oal/rules` — flat list of every loaded rule. Feeds
+   *  the OAL live debugger's rule picker. */
+  async oalRules(): Promise<OalRuleSnapshot[]> {
+    return this.request<OalRuleSnapshot[]>('GET', '/api/oal/rules');
+  }
+
+  /** `GET /api/oal/rules/{ruleName}`. Returns `null` on 404. */
+  async oalRule(ruleName: string): Promise<OalRuleSnapshot | null> {
+    try {
+      return await this.request<OalRuleSnapshot>(
+        'GET',
+        `/api/oal/rules/${encodeURIComponent(ruleName)}`,
+      );
+    } catch (err) {
+      if (isApiError(err) && err.status === 404) return null;
+      throw err;
+    }
   }
 
   /** Trigger a `/api/dump[/{catalog}]` download. Uses an invisible

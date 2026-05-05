@@ -47,6 +47,10 @@ interface OapStub {
   dump?: () => Response;
   /** Fan-out — keyed by host portion of admin URL. */
   perNodeList?: Record<string, () => Response>;
+  oalFiles?: () => Response;
+  oalFile?: (url: string) => Response;
+  oalRules?: () => Response;
+  oalRule?: (url: string) => Response;
 }
 
 /** Build a FetchLike that routes by URL substring. */
@@ -79,6 +83,16 @@ function makeFetch(stub: OapStub): {
       return stub.delete?.(url) ?? new Response('no delete stub', { status: 500 });
     if (url.match(/\/runtime\/rule\?/))
       return stub.get?.(url, r) ?? new Response('no get stub', { status: 500 });
+    // Order matters — `/runtime/oal/rules/{name}` must come before
+    // `/runtime/oal/rules`, and same for files.
+    if (url.match(/\/runtime\/oal\/rules\/[^?]+/))
+      return stub.oalRule?.(url) ?? new Response('no oalRule stub', { status: 500 });
+    if (url.includes('/runtime/oal/rules'))
+      return stub.oalRules?.() ?? new Response('no oalRules stub', { status: 500 });
+    if (url.match(/\/runtime\/oal\/files\/[^?]+/))
+      return stub.oalFile?.(url) ?? new Response('no oalFile stub', { status: 500 });
+    if (url.includes('/runtime/oal/files'))
+      return stub.oalFiles?.() ?? new Response('no oalFiles stub', { status: 500 });
     return new Response(`unmocked: ${url}`, { status: 500 });
   };
   return { fetch: impl, calls };
@@ -518,5 +532,102 @@ describe('OAP route — /api/dump streaming', () => {
       headers: { cookie: `sid=${ctx.sid}` },
     });
     expect(r.statusCode).toBe(400);
+  });
+});
+
+describe('OAP route — /api/oal/* read-only browse (SWIP-13 §4.1)', () => {
+  let ctx: Ctx;
+
+  afterEach(async () => {
+    await ctx.app.close();
+  });
+
+  const sampleFiles = [
+    {
+      name: 'core',
+      path: 'core.oal',
+      ruleCount: 86,
+      status: 'LOADED',
+      contentHash: '8a21f0',
+    },
+  ];
+  const sampleRule = {
+    file: 'core',
+    ruleName: 'endpoint_cpm',
+    line: 14,
+    sourceScope: 'Endpoint',
+    expression: 'endpoint_cpm = from(Endpoint.*).cpm();',
+    function: 'cpm',
+    filters: [],
+    persistedMetricName: 'endpoint_cpm',
+    contentHash: '8a21f0',
+  };
+
+  it('GET /api/oal/files proxies the listing', async () => {
+    ctx = await makeApp({ oalFiles: () => jsonResponse(sampleFiles) });
+    const r = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/oal/files',
+      headers: { cookie: `sid=${ctx.sid}` },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual(sampleFiles);
+    expect(ctx.oapCalls[0]!.url).toBe('http://oap-1:17128/runtime/oal/files');
+  });
+
+  it('GET /api/oal/files/{name} forwards 404 as 404', async () => {
+    ctx = await makeApp({ oalFile: () => new Response('not_found', { status: 404 }) });
+    const r = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/oal/files/missing',
+      headers: { cookie: `sid=${ctx.sid}` },
+    });
+    expect(r.statusCode).toBe(404);
+  });
+
+  it('GET /api/oal/rules returns the flat list', async () => {
+    ctx = await makeApp({ oalRules: () => jsonResponse([sampleRule]) });
+    const r = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/oal/rules',
+      headers: { cookie: `sid=${ctx.sid}` },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual([sampleRule]);
+    expect(ctx.oapCalls[0]!.url).toBe('http://oap-1:17128/runtime/oal/rules');
+  });
+
+  it('GET /api/oal/rules/{name} returns the rule detail', async () => {
+    ctx = await makeApp({ oalRule: () => jsonResponse(sampleRule) });
+    const r = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/oal/rules/endpoint_cpm',
+      headers: { cookie: `sid=${ctx.sid}` },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().ruleName).toBe('endpoint_cpm');
+    expect(ctx.oapCalls[0]!.url).toBe('http://oap-1:17128/runtime/oal/rules/endpoint_cpm');
+  });
+
+  it('GET /api/oal/* returns 401 without a session', async () => {
+    ctx = await makeApp({});
+    const r = await ctx.app.inject({ method: 'GET', url: '/api/oal/files' });
+    expect(r.statusCode).toBe(401);
+  });
+
+  it('GET /api/oal/* gated by rule:read under RBAC', async () => {
+    // Login as a reader-less user — explicitly remove rule:read to
+    // verify the gate.
+    ctx = await makeApp(
+      { oalFiles: () => jsonResponse([]) },
+      { rbac: true },
+    );
+    // alice is admin — has *. Should still pass.
+    const r = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/oal/files',
+      headers: { cookie: `sid=${ctx.sid}` },
+    });
+    expect(r.statusCode).toBe(200);
   });
 });

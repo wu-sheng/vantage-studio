@@ -52,6 +52,11 @@ const sections: NavSection[] = [
         to: '/catalog/lal',
         active: (p) => p.startsWith('/catalog/lal'),
       },
+      {
+        label: 'OAL · read-only',
+        to: '/oal',
+        active: (p) => p.startsWith('/oal'),
+      },
     ],
   },
   {
@@ -87,9 +92,8 @@ const sections: NavSection[] = [
   {
     kicker: 'deferred',
     links: [
-      { label: 'Live debugger', hint: 'later release', disabled: true },
+      { label: 'Live debugger', hint: 'next commit', disabled: true },
       { label: 'History · diff · rollback', hint: 'later release', disabled: true },
-      { label: 'OAL catalog', hint: 'later release', disabled: true },
     ],
   },
 ];
