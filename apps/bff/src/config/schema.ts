@@ -109,6 +109,20 @@ const AuditConfig = z.object({
   file: z.string().min(1).default('/var/lib/vantage-studio/audit.jsonl'),
 });
 
+/** Wire-level debug log — captures every `/api/*` request/response
+ *  and every BFF→OAP outbound call into one JSONL file with shared
+ *  traceIds. Off by default; flip on for integration testing. */
+const DebugLogConfig = z.object({
+  enabled: z.boolean().default(false),
+  /** Absolute path. Same rotation contract as `audit.file`. */
+  file: z.string().min(1).default('/var/lib/vantage-studio/debug-wire.jsonl'),
+  /** Per-leaf truncation, mirroring SWIP-13 §5's per-field cap. */
+  maxBodyChars: z.number().int().positive().default(8192),
+  /** Strip Cookie / Authorization / Set-Cookie / X-Forwarded-For
+   *  before they hit the file. */
+  redactAuthHeaders: z.boolean().default(true),
+});
+
 export const StudioConfigSchema = z.object({
   server: ServerConfig.default({}),
   oap: OapConfig,
@@ -116,6 +130,7 @@ export const StudioConfigSchema = z.object({
   rbac: RbacConfig.optional(),
   session: SessionConfig.default({}),
   audit: AuditConfig.default({}),
+  debugLog: DebugLogConfig.default({}),
 });
 
 export type StudioConfig = z.infer<typeof StudioConfigSchema>;

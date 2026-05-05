@@ -32,6 +32,12 @@ import { registerAuthRoutes } from './auth/routes.js';
 import type { VerifyDeps } from './auth/local.js';
 import { registerOapRoutes } from './oap/routes.js';
 import { registerDebugRoutes } from './oap/debug-routes.js';
+import {
+  createNoopWireLogger,
+  type WireLogger,
+} from './wire/logger.js';
+import { makeWireFetch } from './wire/fetch.js';
+import { registerWireHook } from './wire/hook.js';
 
 export interface BuildServerOptions {
   config: ConfigHandle;
@@ -44,6 +50,10 @@ export interface BuildServerOptions {
   loggerOptions?: { level?: string } | boolean;
   /** Test seam — replaces global fetch in every OAP call. */
   oapFetch?: FetchLike;
+  /** Wire-level debug log. When omitted the noop logger is used —
+   *  zero overhead, all helpers short-circuit. Production wires the
+   *  file-backed logger from `index.ts`. */
+  wire?: WireLogger;
   /** Absolute path to the built SPA's `dist/` directory. When set
    *  (production), the BFF serves it under `/` with a SPA-fallback
    *  to `index.html` for unknown non-`/api/*` paths. Unset (dev),
@@ -77,6 +87,19 @@ export async function buildServer(opts: BuildServerOptions): Promise<BuiltServer
     done(null, body);
   });
 
+  // Wire log: hook for inbound /api/* + wrap outbound fetch. The
+  // logger short-circuits on every call when disabled in config, so
+  // it's safe to install unconditionally.
+  const wire = opts.wire ?? createNoopWireLogger();
+  registerWireHook(app, wire, {
+    redactAuthHeaders: () => opts.config.current().debugLog.redactAuthHeaders,
+  });
+  const baseFetch: FetchLike =
+    opts.oapFetch ?? ((input, init) => fetch(input, init));
+  const wrappedFetch: FetchLike = makeWireFetch(baseFetch, wire, {
+    redactAuthHeaders: opts.config.current().debugLog.redactAuthHeaders,
+  });
+
   registerAuthRoutes(app, {
     config: opts.config,
     sessions,
@@ -88,14 +111,14 @@ export async function buildServer(opts: BuildServerOptions): Promise<BuiltServer
     config: opts.config,
     sessions,
     audit: opts.audit,
-    ...(opts.oapFetch !== undefined ? { fetch: opts.oapFetch } : {}),
+    fetch: wrappedFetch,
   });
 
   registerDebugRoutes(app, {
     config: opts.config,
     sessions,
     audit: opts.audit,
-    ...(opts.oapFetch !== undefined ? { fetch: opts.oapFetch } : {}),
+    fetch: wrappedFetch,
   });
 
   app.get('/healthz', async (_req, reply) => reply.code(200).send({ ok: true }));

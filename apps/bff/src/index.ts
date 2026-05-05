@@ -29,6 +29,7 @@ import { loadConfig } from './config/loader.js';
 import { createAuditLogger } from './audit/logger.js';
 import { InMemorySessionStore } from './auth/sessions.js';
 import { buildServer } from './server.js';
+import { createWireLogger } from './wire/logger.js';
 
 /** First-run seed: when STUDIO_CONFIG points at a path that doesn't
  *  yet exist and STUDIO_CONFIG_EXAMPLE points at a baked-in defaults
@@ -66,6 +67,23 @@ async function main(): Promise<void> {
 
   const cfg = config.current();
   const audit = await createAuditLogger({ file: cfg.audit.file });
+  const wire = await createWireLogger(
+    {
+      enabled: cfg.debugLog.enabled,
+      file: cfg.debugLog.file,
+      maxBodyChars: cfg.debugLog.maxBodyChars,
+      redactAuthHeaders: cfg.debugLog.redactAuthHeaders,
+    },
+    () => {
+      const c = config.current().debugLog;
+      return {
+        enabled: c.enabled,
+        file: c.file,
+        maxBodyChars: c.maxBodyChars,
+        redactAuthHeaders: c.redactAuthHeaders,
+      };
+    },
+  );
   const sessions = new InMemorySessionStore();
 
   const uiDir = process.env.STUDIO_UI_DIR;
@@ -73,6 +91,7 @@ async function main(): Promise<void> {
     config,
     sessions,
     audit,
+    wire,
     ...(uiDir !== undefined ? { uiDir } : {}),
   });
 
@@ -83,6 +102,7 @@ async function main(): Promise<void> {
     clearInterval(reaper);
     await app.close();
     await audit.close();
+    await wire.close();
     await config.stop();
   };
   process.on('SIGINT', () => void stop('SIGINT').then(() => process.exit(0)));

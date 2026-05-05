@@ -51,6 +51,12 @@ session:
 
 audit:
   file: /data/audit.jsonl # absolute path; daily rotation is your job
+
+debugLog: # OPTIONAL — wire-level capture for integration testing
+  enabled: false
+  file: /data/debug-wire.jsonl
+  maxBodyChars: 8192
+  redactAuthHeaders: true
 ```
 
 ## Field reference
@@ -130,6 +136,25 @@ surface; it has no current effect.
 | Field  | Default                               | Notes                                                                                             |
 | ------ | ------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `file` | `/var/lib/vantage-studio/audit.jsonl` | One JSON line per actor-initiated event. Daily rotation is external (logrotate, k8s log shipper). |
+
+### `debugLog` (optional)
+
+Wire-level capture of every `/api/*` request and every BFF→OAP
+outbound call into a single JSONL file. **Off by default.** Useful
+when integration-testing Studio against a real OAP build to spot
+field-level deviations from the SWIP-13 payload contract.
+
+| Field               | Default                                    | Notes                                                                                                           |
+| ------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `enabled`           | `false`                                    | Hot-reloadable — flip to `true` for a scenario, flip back to `false` afterwards.                                |
+| `file`              | `/var/lib/vantage-studio/debug-wire.jsonl` | Daily rotation is external (same contract as `audit.file`).                                                     |
+| `maxBodyChars`      | `8192`                                     | Per-leaf char cap; longer bodies get a `… +N chars truncated` marker (mirrors SWIP-13 §5's truncation).         |
+| `redactAuthHeaders` | `true`                                     | Strips `Cookie` / `Authorization` / `Set-Cookie` / `X-Forwarded-For`. `/api/auth/login` request body is always redacted regardless. |
+
+Each event has a `traceId` shared between the inbound `/api/*`
+request and every downstream OAP outbound it triggered, so a
+single browser action can be reconstructed from the JSONL with one
+`grep` on the traceId.
 
 ## Reload behaviour
 
