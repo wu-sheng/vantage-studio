@@ -10,9 +10,52 @@ You may obtain a copy of the License at
 
 # Auth
 
-Studio in v1 supports **local** authentication only — usernames +
-argon2id-hashed passwords listed in `studio.yaml`. OIDC and LDAP are
-deferred to follow-up releases.
+Studio in v1 supports **local authentication only** — usernames +
+argon2id-hashed passwords listed in `studio.yaml`. RBAC is optional;
+absent it everyone has full access. The audit log captures every
+mutating call.
+
+## What's supported
+
+| Backend         | Status               | Notes                                                                                                       |
+| --------------- | -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Local**       | ✓ shipped            | `auth.backend: local` (the only valid value today). Users + argon2id hashes in `studio.yaml`. Hot-reloaded. |
+| **LDAP / AD**   | deferred (see below) | Not implemented in v1. The `auth.backend` enum only accepts `local` — even with the field present.          |
+| **OIDC / SAML** | deferred (see below) | Same as LDAP.                                                                                               |
+
+> The `studio.yaml` schema enforces `auth.backend = "local"`; setting
+> anything else trips a zod validation error at config-load time and
+> the previous valid config keeps serving. We'd rather fail loudly
+> than silently treat an unknown backend as a no-op.
+
+### Why local-only first
+
+Studio's surface is small — one operator console for one cluster.
+The point of v1 is the rule-management UX itself, not an enterprise
+identity matrix. Local auth covers:
+
+- Internal-network deploys behind a corporate SSO at the network edge
+  (an Identity-Aware Proxy / oauth2-proxy / Pomerium in front handles
+  the actual SSO; Studio is one local user behind that).
+- Air-gapped / on-prem evaluations.
+- Per-team operator groups where a 2-line YAML edit beats a directory
+  integration.
+
+### The deferred path
+
+LDAP and OIDC will land as alternative `auth.backend` values:
+
+- `auth.backend: ldap` — `auth.ldap.{url, bindDN, bindPassword,
+userSearchBase, groupSearchBase}`. RBAC roles map from LDAP groups
+  (configurable). No password hashes in `studio.yaml`.
+- `auth.backend: oidc` — `auth.oidc.{issuer, clientId, clientSecret,
+redirectUri, scopes}` via `openid-client`. Roles map from a chosen
+  claim (`groups` / `roles` / custom).
+
+Both are pure-additive — the `local` backend keeps working unchanged.
+**Until they ship**: front Studio with an Identity-Aware Proxy that
+terminates SSO and forwards a single shared local credential. That's
+the documented production pattern in [`docker.md`](docker.md).
 
 ## Adding a user
 
@@ -96,12 +139,23 @@ auth:
         roles: [viewer]
 ```
 
-The current user's verbs are visible in the **DSL Management** page
-under "your access."
+The current user's effective verbs are visible in the **Permissions**
+page (left nav, bottom).
 
 ### Verb table
 
-See [`configure.md`](configure.md) for the full table. Highlights:
+| Verb                    | Routes it gates                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `rule:read`             | catalog browse, single-rule fetch, dump, OAL catalog browse                            |
+| `rule:write`            | `addOrUpdate` (filter-only), `inactivate`                                              |
+| `rule:write:structural` | `addOrUpdate` with `allowStorageChange=true` or `force=true`; `revertToBundled` delete |
+| `rule:delete`           | `delete` (default mode)                                                                |
+| `rule:debug`            | live debugger — start / poll / stop debug sessions across MAL / LAL / OAL              |
+| `cluster:read`          | cluster matrix, dsl-debugging status pane                                              |
+| `admin`                 | (reserved — audit-read in a later release)                                             |
+| `*`                     | all of the above (wildcard)                                                            |
+
+Highlights:
 
 - `rule:write:structural` is the gate on every schema-change action —
   `addOrUpdate` with `allowStorageChange=true`, `force=true` recovery,

@@ -10,11 +10,24 @@ You may obtain a copy of the License at
 
 # Configure
 
-Studio reads one file: `studio.yaml`. The path defaults to
-`/etc/studio/studio.yaml`, override via the `STUDIO_CONFIG` env var.
-The file is **hot-reloaded** — edits take effect without a restart.
-An invalid edit is logged and the previous valid config keeps
-serving, so a typo doesn't take Studio down.
+Studio reads one file: `studio.yaml`. This page is the **schema
+reference** — every key, every default, every constraint. For _how_
+to mount that file in a container, override its path, or layer
+secrets on top, see [`docker.md`](docker.md).
+
+The file is **hot-reloaded** — edits take effect within ~1 s without
+a restart. An invalid edit is logged (zod validation error) and the
+previous valid config keeps serving, so a typo doesn't take Studio
+down.
+
+Path defaults:
+
+| Where running | Default path              |
+| ------------- | ------------------------- |
+| Docker image  | `/data/studio.yaml`       |
+| Bare BFF      | `/etc/studio/studio.yaml` |
+
+Override with the `STUDIO_CONFIG` env var.
 
 ## Schema
 
@@ -179,3 +192,12 @@ on success and
 
 on parse / schema failure. Runtime state (sessions, in-flight
 requests) is preserved across a successful reload.
+
+## See also
+
+- [`docker.md`](docker.md) — how to mount this file in the container,
+  override its path, or layer secrets from a Kubernetes Secret.
+- [`auth.md`](auth.md) — local users, the optional RBAC block, audit
+  log shape, and the deferred LDAP / OIDC plan.
+- [`compatibility.md`](compatibility.md) — required SkyWalking
+  version + the OAP module selectors Studio depends on.

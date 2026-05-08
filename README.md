@@ -39,21 +39,44 @@ make compose-up
 Visit <http://localhost:8080>; login `admin` / `vantage-changeme`.
 
 > Replace the default password by editing the `studio.yaml` that
-> lives in the `studio-data` volume. See [`docs/install.md`](docs/install.md)
-> for the OAP image pin you'll need until the upstream
-> `feature/runtime-rule-hot-update` branch lands in a tagged release.
+> lives in the `studio-data` volume — see
+> [`docs/auth.md`](docs/auth.md) for the `vsadmin:hash` workflow.
+> See [`docs/install.md`](docs/install.md) for the OAP image build
+> step needed until SWIP-13 lands in a tagged SkyWalking release.
 
 ## Documentation
 
-- [`docs/install.md`](docs/install.md) — Docker, compose, production
-  install hints.
-- [`docs/configure.md`](docs/configure.md) — every `studio.yaml` knob.
-- [`docs/auth.md`](docs/auth.md) — users, optional RBAC, audit log.
+**Get started**
+
+- [`docs/install.md`](docs/install.md) — demo `docker compose` stack
+  (Studio + OAP + BanyanDB) and the OAP module selectors Studio
+  depends on.
+- [`docs/compatibility.md`](docs/compatibility.md) — required
+  SkyWalking version (10.5.0+) and the ports Studio talks to.
+
+**Configure**
+
+- [`docs/docker.md`](docs/docker.md) — running the image: env vars,
+  volumes, override patterns (mount the file, point `STUDIO_CONFIG`
+  elsewhere, layer secrets), Kubernetes manifests, reverse-proxy /
+  TLS notes, reload + restart semantics.
+- [`docs/configure.md`](docs/configure.md) — `studio.yaml` schema
+  reference: every key, every default, every constraint.
+- [`docs/auth.md`](docs/auth.md) — local auth, optional RBAC + verb
+  table, audit log JSONL shape, deferred LDAP / OIDC plan.
+
+**Operate**
+
 - [`docs/operator-workflows.md`](docs/operator-workflows.md) — push
-  a rule, recover from a broken push, inspect cluster, take a dump.
-- [`docs/compatibility.md`](docs/compatibility.md) — OAP version pin
-  and the deferred-features list.
+  a rule, recover from a broken push, inspect cluster convergence,
+  take a dump, the inactivate / delete / revert-to-bundled
+  semantics.
+
+**Reference**
+
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes.
+- [`branding/README.md`](branding/README.md) — logo assets + how
+  they're sized for app shell, favicon, and marketing.
 
 ## Repository layout
 
