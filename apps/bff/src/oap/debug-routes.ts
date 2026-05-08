@@ -79,6 +79,11 @@ export function registerDebugRoutes(app: FastifyInstance, deps: DebugRouteDeps):
       if (!parsed) return;
       try {
         const result = await clients().debug().startSession(parsed);
+        const local = result.priorCleanup?.local;
+        const peers = result.priorCleanup?.peers ?? [];
+        const totalPriorCleanup =
+          (local?.stoppedCount ?? 0) +
+          peers.reduce((n, p) => n + (p.stoppedCount ?? p.stoppedSessionIds?.length ?? 0), 0);
         deps.audit.log({
           action: 'debug.start',
           verb: 'rule:debug',
@@ -91,9 +96,12 @@ export function registerDebugRoutes(app: FastifyInstance, deps: DebugRouteDeps):
             name: parsed.name,
             ruleName: parsed.ruleName,
             granularity: result.granularity,
+            localInstalled: result.localInstalled,
+            installedCreated: result.installed?.created,
+            installedTotal: result.installed?.total,
             recordCap: parsed.recordCap,
             retentionMillis: parsed.retentionMillis,
-            priorCleanupCount: result.priorCleanup.length,
+            priorCleanupCount: totalPriorCleanup,
           },
           fromIp: req.ip,
           sessionId: req.session?.sid,
@@ -273,8 +281,16 @@ function parseStartArgs(raw: unknown, reply: FastifyReply): StartSessionArgs | n
     }
     out.granularity = b.granularity as Granularity;
   }
+  // Bounds match upstream `SessionLimits.java` so we surface a 400
+  // here rather than letting OAP reject the install with a
+  // `invalid_limits` error after the round-trip.
   if (b.recordCap !== undefined) {
-    if (typeof b.recordCap !== 'number' || !Number.isFinite(b.recordCap) || b.recordCap <= 0) {
+    if (
+      typeof b.recordCap !== 'number' ||
+      !Number.isFinite(b.recordCap) ||
+      b.recordCap <= 0 ||
+      b.recordCap > 10_000
+    ) {
       reply.code(400).send({ error: 'invalid_recordCap' });
       return null;
     }
@@ -284,7 +300,8 @@ function parseStartArgs(raw: unknown, reply: FastifyReply): StartSessionArgs | n
     if (
       typeof b.retentionMillis !== 'number' ||
       !Number.isFinite(b.retentionMillis) ||
-      b.retentionMillis <= 0
+      b.retentionMillis <= 0 ||
+      b.retentionMillis > 3_600_000
     ) {
       reply.code(400).send({ error: 'invalid_retentionMillis' });
       return null;

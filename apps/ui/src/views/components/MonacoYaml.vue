@@ -25,12 +25,56 @@ const props = defineProps<{
   readOnly?: boolean;
 }>();
 
-const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
+const emit = defineEmits<{
+  'update:modelValue': [value: string];
+  /** Fired when the operator clicks the green ▶ in the gutter next
+   *  to a `- name: <X>` line. The parent decides how to route — for
+   *  MAL/LAL editor pages, the catalog + file are already in the URL,
+   *  so the parent just needs the rule/metric name. */
+  'debug-click': [ruleName: string];
+}>();
 
 const host = ref<HTMLDivElement | null>(null);
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
 let model: monaco.editor.ITextModel | null = null;
 let suppressChange = false;
+let decorationCollection: monaco.editor.IEditorDecorationsCollection | null = null;
+/** lineNumber → ruleName, refreshed on every model change so a click
+ *  in the gutter resolves to the rule on that line without a re-scan. */
+const lineToRule = new Map<number, string>();
+
+/** MAL + LAL share the same `- name: <X>` shape inside YAML lists.
+ *  Capture group 1 = metric / rule name. */
+const RULE_NAME_RE = /^[ \t]*-[ \t]+name:[ \t]*([A-Za-z_][A-Za-z0-9_-]*)/gm;
+
+function refreshDecorations(): void {
+  lineToRule.clear();
+  if (!model || !decorationCollection) return;
+  const text = model.getValue();
+  const decorations: monaco.editor.IModelDeltaDecoration[] = [];
+  // Iterate matches and convert byte offsets to (line, column).
+  let m: RegExpExecArray | null;
+  RULE_NAME_RE.lastIndex = 0;
+  while ((m = RULE_NAME_RE.exec(text)) !== null) {
+    // Compute line number from the match offset.
+    let line = 1;
+    for (let i = 0; i < m.index; i++) {
+      if (text.charCodeAt(i) === 10 /* \n */) line += 1;
+    }
+    const ruleName = m[1]!;
+    lineToRule.set(line, ruleName);
+    decorations.push({
+      range: new monaco.Range(line, 1, line, 1),
+      options: {
+        glyphMarginClassName: 'rr-debug-glyph',
+        glyphMarginHoverMessage: {
+          value: `Live debug · **${ruleName}**`,
+        },
+      },
+    });
+  }
+  decorationCollection.set(decorations);
+}
 
 onMounted(() => {
   if (!host.value) return;
@@ -53,11 +97,26 @@ onMounted(() => {
     renderWhitespace: 'selection',
     smoothScrolling: true,
     wordWrap: 'off',
+    /* Glyph margin hosts the green ▶ next to each `- name: …`
+     * row so the operator can jump to the live debugger from
+     * the editor without re-typing the metric name. */
+    glyphMargin: true,
   });
 
+  decorationCollection = editor.createDecorationsCollection([]);
+  refreshDecorations();
+
   model.onDidChangeContent(() => {
-    if (suppressChange) return;
-    if (model) emit('update:modelValue', model.getValue());
+    if (!suppressChange && model) emit('update:modelValue', model.getValue());
+    refreshDecorations();
+  });
+
+  editor.onMouseDown((e) => {
+    if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+    const line = e.target.position?.lineNumber;
+    if (typeof line !== 'number') return;
+    const ruleName = lineToRule.get(line);
+    if (ruleName) emit('debug-click', ruleName);
   });
 });
 
@@ -94,6 +153,7 @@ onBeforeUnmount(() => {
   model?.dispose();
   editor = null;
   model = null;
+  decorationCollection = null;
 });
 </script>
 

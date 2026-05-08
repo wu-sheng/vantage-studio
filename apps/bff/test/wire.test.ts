@@ -97,7 +97,9 @@ describe('wire/fetch wrapper', () => {
     };
     const wrapped = makeWireFetch(base, wire, { redactAuthHeaders: true });
 
-    await expect(wrapped('http://oap:17128/runtime/rule/list', { method: 'GET' })).rejects.toThrow();
+    await expect(
+      wrapped('http://oap:17128/runtime/rule/list', { method: 'GET' }),
+    ).rejects.toThrow();
     expect(wire.events).toHaveLength(1);
     expect(wire.events[0]!.error).toBe('connection refused');
     expect(wire.events[0]!.status).toBeUndefined();
@@ -105,8 +107,7 @@ describe('wire/fetch wrapper', () => {
 
   it('truncates response bodies past the cap', async () => {
     const wire = createMemoryWireLogger({ maxBodyChars: 16 });
-    const base: FetchLike = async () =>
-      new Response('abcdefghijklmnopqrstuvwxyz', { status: 200 });
+    const base: FetchLike = async () => new Response('abcdefghijklmnopqrstuvwxyz', { status: 200 });
     const wrapped = makeWireFetch(base, wire, { redactAuthHeaders: true });
 
     await wrapped('http://oap:17128/x', { method: 'GET' });
@@ -123,10 +124,7 @@ describe('wire hook integration via /api/*', () => {
     app = null;
   });
 
-  async function buildWithWire(opts: {
-    enabled: boolean;
-    oapFetch: FetchLike;
-  }): Promise<{
+  async function buildWithWire(opts: { enabled: boolean; oapFetch: FetchLike }): Promise<{
     app: FastifyInstance;
     wire: ReturnType<typeof createMemoryWireLogger>;
     sid: string;

@@ -32,10 +32,7 @@ import { registerAuthRoutes } from './auth/routes.js';
 import type { VerifyDeps } from './auth/local.js';
 import { registerOapRoutes } from './oap/routes.js';
 import { registerDebugRoutes } from './oap/debug-routes.js';
-import {
-  createNoopWireLogger,
-  type WireLogger,
-} from './wire/logger.js';
+import { createNoopWireLogger, type WireLogger } from './wire/logger.js';
 import { makeWireFetch } from './wire/fetch.js';
 import { registerWireHook } from './wire/hook.js';
 
@@ -94,8 +91,7 @@ export async function buildServer(opts: BuildServerOptions): Promise<BuiltServer
   registerWireHook(app, wire, {
     redactAuthHeaders: () => opts.config.current().debugLog.redactAuthHeaders,
   });
-  const baseFetch: FetchLike =
-    opts.oapFetch ?? ((input, init) => fetch(input, init));
+  const baseFetch: FetchLike = opts.oapFetch ?? ((input, init) => fetch(input, init));
   const wrappedFetch: FetchLike = makeWireFetch(baseFetch, wire, {
     redactAuthHeaders: opts.config.current().debugLog.redactAuthHeaders,
   });

@@ -36,8 +36,9 @@
 
 import { computed, onScopeDispose, ref, shallowRef, type Ref } from 'vue';
 import type {
+  InstallSummary,
   PeerInstallAck,
-  PriorCleanupOutcome,
+  PriorCleanup,
   SessionResponse,
   StartSessionArgs,
 } from '@vantage-studio/api-client';
@@ -46,13 +47,7 @@ import { getClientId } from './useClientId.js';
 
 export type DebugWidgetKey = 'mal' | 'lal' | 'oal';
 
-export type DebugState =
-  | 'idle'
-  | 'starting'
-  | 'capturing'
-  | 'captured'
-  | 'stopped'
-  | 'error';
+export type DebugState = 'idle' | 'starting' | 'capturing' | 'captured' | 'stopped' | 'error';
 
 export interface UseDebugSessionResult {
   clientId: string;
@@ -63,9 +58,13 @@ export interface UseDebugSessionResult {
   error: Ref<string | null>;
   /** Per-peer install acks from the most recent start call. */
   peerAcks: Ref<PeerInstallAck[]>;
-  /** Per-peer cleanup outcomes from the StopByClientId broadcast that
-   *  ran before the session was allocated. */
-  priorCleanup: Ref<PriorCleanupOutcome[]>;
+  /** Cluster-wide install rollup `{created, total}` from the most
+   *  recent start call. Null while idle / starting. */
+  installed: Ref<InstallSummary | null>;
+  /** Cluster cleanup report from the StopByClientId broadcast that
+   *  ran before the session was allocated. The local node's slice is
+   *  always present; `peers[]` is one entry per known peer. */
+  priorCleanup: Ref<PriorCleanup | null>;
   /** Convenience flat list of every prior session id that was
    *  terminated by the cleanup, derived from `priorCleanup`. */
   replacedPriorIds: Ref<string[]>;
@@ -89,9 +88,7 @@ function deriveState(resp: SessionResponse): 'capturing' | 'captured' {
   // The wire doesn't have a top-level status; combine per-node flags.
   // If every reachable node is captured (or unreachable / not_local),
   // there's nothing more coming — treat as captured.
-  const reachable = resp.nodes.filter(
-    (n) => n.status === 'ok' || n.status === 'captured',
-  );
+  const reachable = resp.nodes.filter((n) => n.status === 'ok' || n.status === 'captured');
   if (reachable.length === 0) {
     // No-one's contributing data; nothing to wait for.
     return 'captured';
@@ -111,12 +108,15 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
   const sessionId = ref<string | null>(null);
   const error = ref<string | null>(null);
   const peerAcks = ref<PeerInstallAck[]>([]);
-  const priorCleanup = ref<PriorCleanupOutcome[]>([]);
+  const installed = ref<InstallSummary | null>(null);
+  const priorCleanup = ref<PriorCleanup | null>(null);
 
   const replacedPriorIds = computed<string[]>(() => {
-    const out: string[] = [];
-    for (const c of priorCleanup.value) {
-      if (c.stoppedSessionIds) out.push(...c.stoppedSessionIds);
+    const c = priorCleanup.value;
+    if (!c) return [];
+    const out: string[] = [...(c.local.stoppedSessionIds ?? [])];
+    for (const p of c.peers) {
+      if (p.stoppedSessionIds) out.push(...p.stoppedSessionIds);
     }
     return out;
   });
@@ -194,13 +194,15 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     session.value = null;
     sessionId.value = null;
     peerAcks.value = [];
-    priorCleanup.value = [];
+    installed.value = null;
+    priorCleanup.value = null;
 
     try {
       const r = await bff.debugStart({ clientId, ...args });
       sessionId.value = r.sessionId;
       peerAcks.value = r.peers ?? [];
-      priorCleanup.value = r.priorCleanup ?? [];
+      installed.value = r.installed ?? null;
+      priorCleanup.value = r.priorCleanup ?? null;
       state.value = 'capturing';
       // First poll immediately so the operator sees something fast.
       void poll(pollGeneration);
@@ -267,6 +269,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     sessionId: computed(() => sessionId.value) as Ref<string | null>,
     error,
     peerAcks,
+    installed,
     priorCleanup,
     replacedPriorIds,
     start,

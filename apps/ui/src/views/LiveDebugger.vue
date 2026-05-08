@@ -14,16 +14,27 @@
  * operator can have all three running in parallel from the same
  * tab.
  *
- * SWIP-13 §7 locked the three views; this is the entry point.
+ * The active tab is **URL-driven** (`/debug/{mal|lal|oal}`) so deep
+ * links from elsewhere (catalog rule cards, OAL file viewer's gutter
+ * arrow) land on the right tab with their query params intact for
+ * the per-DSL picker to read.
  */
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import DebugMal from './debug/DebugMal.vue';
 import DebugLal from './debug/DebugLal.vue';
 import DebugOal from './debug/DebugOal.vue';
 
 type Tab = 'mal' | 'lal' | 'oal';
 
-const tab = ref<Tab>('mal');
+const route = useRoute();
+const router = useRouter();
+
+const tab = computed<Tab>(() => {
+  const raw = route.params.tab;
+  if (raw === 'mal' || raw === 'lal' || raw === 'oal') return raw;
+  return 'mal';
+});
 
 const tabs: { id: Tab; label: string; hint: string }[] = [
   { id: 'mal', label: 'MAL', hint: 'meter analyzer · OTEL + log-mal' },
@@ -32,6 +43,12 @@ const tabs: { id: Tab; label: string; hint: string }[] = [
 ];
 
 const activeHint = computed(() => tabs.find((t) => t.id === tab.value)?.hint ?? '');
+
+function selectTab(t: Tab): void {
+  // Tab clicks clear deep-link query params — they were specific to
+  // the prior tab's picker and shouldn't leak across.
+  void router.push({ path: `/debug/${t}` });
+}
 </script>
 
 <template>
@@ -48,7 +65,7 @@ const activeHint = computed(() => tabs.find((t) => t.id === tab.value)?.hint ?? 
         type="button"
         class="dbg__tab"
         :class="{ 'dbg__tab--active': tab === t.id }"
-        @click="tab = t.id"
+        @click="selectTab(t.id)"
       >
         {{ t.label }}
       </button>
@@ -84,7 +101,7 @@ const activeHint = computed(() => tabs.find((t) => t.id === tab.value)?.hint ?? 
 }
 
 .dbg__hint {
-  font-size: 11.5px;
+  font-size: 15px;
   color: var(--rr-dim);
 }
 
@@ -100,7 +117,7 @@ const activeHint = computed(() => tabs.find((t) => t.id === tab.value)?.hint ?? 
   border-bottom: 2px solid transparent;
   padding: 8px 14px;
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
   letter-spacing: 0.5px;
   text-transform: uppercase;
   color: var(--rr-dim);

@@ -29,7 +29,7 @@ body,
   background: var(--rr-bg);
   color: var(--rr-ink);
   font-family: var(--rr-font-ui);
-  font-size: 13px;
+  font-size: 16.5px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -50,7 +50,7 @@ input,
 select,
 textarea {
   font-family: inherit;
-  font-size: 13px;
+  font-size: 16.5px;
   color: var(--rr-ink);
   background: var(--rr-bg2);
   border: 1px solid var(--rr-border);
@@ -68,4 +68,73 @@ textarea:focus {
 ::selection {
   background: var(--rr-active);
   color: var(--rr-bg);
+}
+
+/* Per-DSL syntax highlighting (token classes emitted by
+ * `views/syntaxHighlight.ts`). Lives in global.css because the
+ * tokens render inside `<style scoped>` panes (OalCatalog,
+ * DebugSourcePane); component-scoped styles can't reach them. */
+.hl {
+  font-family: inherit;
+}
+.hl--comment {
+  color: var(--rr-dim);
+  font-style: italic;
+}
+.hl--string {
+  color: var(--rr-info, #6ba3d6);
+}
+.hl--number {
+  color: var(--rr-violet, #a990e6);
+}
+.hl--keyword {
+  color: var(--rr-active);
+  font-weight: 500;
+}
+.hl--fn {
+  color: var(--rr-ok, #7fbf7a);
+}
+.hl--type {
+  color: var(--rr-warn, #e5a84a);
+}
+.hl--punct {
+  color: var(--rr-ink2);
+}
+
+/* Monaco gutter glyph for "live debug this rule". The class is set
+ * by MonacoYaml's deltaDecorations and rendered into Monaco's DOM,
+ * which sits outside any Vue `<style scoped>` reach — so the rule
+ * lives in the global stylesheet. */
+.rr-debug-glyph {
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M 4 3 L 12 8 L 4 13 Z' fill='%234ec9b0'/></svg>");
+  background-size: 12px 12px;
+  background-repeat: no-repeat;
+  background-position: center center;
+}
+.rr-debug-glyph:hover {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M 4 3 L 12 8 L 4 13 Z' fill='%23e23a48'/></svg>");
+}
+
+/* "open in editor →" jump-back link rendered next to the start/stop
+ * buttons on each debug view. Defined globally so the three DSL
+ * views share one rule. */
+.ctl__editlink {
+  align-self: flex-end;
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-info);
+  text-decoration: none;
+  border: 1px solid var(--rr-border);
+  padding: 4px 10px;
+  border-radius: var(--rr-radius-md);
+  margin-left: 4px;
+  transition:
+    color 80ms,
+    border-color 80ms;
+}
+.ctl__editlink:hover {
+  color: var(--rr-active);
+  border-color: var(--rr-active);
+  text-decoration: none;
 }

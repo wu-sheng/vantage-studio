@@ -11,23 +11,30 @@
 /**
  * LAL live-debugger view. Hosted in `<DebugView>`.
  *
- * Each LAL record's payload is `{ sourceLine, body: { aborted,
- * hasOutput, hasParsed, extra: {...} } }`. Stages: text / parser /
- * extractor / outputRecord / outputMetric, plus `line` records when
- * granularity=statement (one per meaningful DSL statement).
+ * Each LAL execution shows up as one `SessionRecord` whose `samples[]`
+ * walks `input → function → output` stages. Sample payloads carry the
+ * unified envelope `{aborted, hasParsed, input?, output?, parsedKeys}`
+ * — `input` populated on the first sample (raw `LogData` /
+ * `Message`), `output` populated on every sample after `bindInput`
+ * (the `LogBuilder` snapshot, including the merged `tags[]` with
+ * `original | lal-added | lal-override` status).
  *
- * The `name` query param is the file name with extension (e.g.
- * `default.yaml`); for runtime-rule-applied LAL the upstream uses
- * the rule name directly.
+ * Statement-mode capture (`granularity=statement`) appends an extra
+ * record per DSL statement, with `sample.sourceLine` pointing at the
+ * 1-based DSL-block line that fired.
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { useQuery } from '@tanstack/vue-query';
 import type {
+  BundledEntry,
   Granularity,
-  LalBlockPayload,
+  LalLogBuilderOutput,
+  LalSamplePayload,
   ListEnvelope,
   NodeSlice,
   SessionRecord,
+  SessionSample,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
@@ -36,44 +43,103 @@ import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
 import DebugSourcePane from './DebugSourcePane.vue';
-import {
-  isLalBlockPayload,
-  isLalLinePayload,
-  isLalRecord,
-  shortHash,
-  stageTone,
-} from './payload.js';
+import { isLalSamplePayload, sampleTone } from './payload.js';
 import { findLineMatches } from './sourceMatch.js';
 
+const route = useRoute();
 const dbg = useDebugSession('lal');
+/** A LAL "rule" in the catalog is a YAML **file** — e.g.
+ *  `default`, `envoy-ai-gateway`. Each file's body has a `rules:`
+ *  list, and OAP keys the debug install on
+ *  `(catalog=lal, name=<file>, ruleName=<inner-rule-name>)`. So
+ *  the picker has two levels: the file (selectedFile) AND a rule
+ *  drilled out of the file's YAML body. */
+const selectedFile = ref<string>('');
 const selectedRule = ref<string>('');
-const fileName = ref<string>('');
 const granularity = ref<Granularity>('block');
 const recordCap = ref<number>(1000);
 const retentionMinutes = ref<number>(5);
 
+/** Deep-link from a LAL rule card / Monaco gutter — `?file=&name=`
+ *  pre-fills both. `name` is the inner ruleName; `file` is the LAL
+ *  file. Older callers that only pass `?name=` get the file inferred
+ *  (the inner rule and file share a name in single-rule files). */
+watch(
+  () => [route.query.name, route.query.file] as const,
+  ([n, f]) => {
+    if (typeof f === 'string' && f.length > 0) {
+      selectedFile.value = f;
+    } else if (typeof n === 'string' && n.length > 0) {
+      // backward-compat: single-rule files where rule == file basename
+      selectedFile.value = n;
+    }
+    if (typeof n === 'string' && n.length > 0) {
+      selectedRule.value = n;
+    }
+  },
+  { immediate: true },
+);
+
+// File picker feed: `/runtime/rule/list` (operator-pushed +
+// dslManager-tracked) ∪ `/runtime/rule/bundled` (every shipped LAL
+// rule file). On a fresh OAP `/list` is empty while `/bundled` has
+// the catalogue, so the merge keeps the dropdown populated.
 const listQuery = useQuery({
   queryKey: ['debug-lal/list'],
   queryFn: async (): Promise<ListEnvelope> => bff.catalogList('lal'),
 });
 
-const ruleNames = computed<string[]>(() => {
-  const env = listQuery.data.value;
-  if (!env) return [];
-  return env.rules.map((r) => r.name).sort((a, b) => a.localeCompare(b));
+const bundledQuery = useQuery({
+  queryKey: ['debug-lal/bundled'],
+  queryFn: async (): Promise<BundledEntry[]> => bff.catalogBundled('lal', false),
 });
 
-function onRuleChange(): void {
-  if (selectedRule.value && !fileName.value) {
-    fileName.value = `${selectedRule.value}.yaml`;
+const fileNames = computed<string[]>(() => {
+  const seen = new Set<string>();
+  const env = listQuery.data.value;
+  if (env) for (const r of env.rules) seen.add(r.name);
+  for (const e of bundledQuery.data.value ?? []) seen.add(e.name);
+  return [...seen].sort((a, b) => a.localeCompare(b));
+});
+
+/** Pull the selected LAL file's YAML so we can extract its inner
+ *  `rules[].name` list. Same shape as MAL — a regex over the body
+ *  is enough since the YAML structure is rigid. */
+const ruleContentQuery = useQuery({
+  queryKey: computed(() => ['debug-lal/content', selectedFile.value]),
+  queryFn: async (): Promise<string | null> => {
+    if (!selectedFile.value) return null;
+    const got = await bff.getRule({ catalog: 'lal', name: selectedFile.value });
+    return got?.content ?? null;
+  },
+  enabled: computed(() => selectedFile.value !== ''),
+  staleTime: 30_000,
+});
+
+const RULE_NAME_RE = /^[ \t]*-[ \t]+name:[ \t]*([A-Za-z_][A-Za-z0-9_-]*)/gm;
+const innerRuleNames = computed<string[]>(() => {
+  const c = ruleContentQuery.data.value;
+  if (!c) return [];
+  const seen = new Set<string>();
+  for (const m of c.matchAll(RULE_NAME_RE)) {
+    seen.add(m[1]!);
   }
-}
+  return [...seen].sort((a, b) => a.localeCompare(b));
+});
+
+/** When the file changes, reset the rule selection if it isn't part
+ *  of the new file's rule list. Keeps deep-link preselect intact. */
+watch(innerRuleNames, (names) => {
+  if (selectedRule.value && names.length > 0 && !names.includes(selectedRule.value)) {
+    selectedRule.value = '';
+  }
+});
 
 const startEnabled = computed(() => {
   const s = dbg.state.value;
   return (
+    selectedFile.value !== '' &&
     selectedRule.value !== '' &&
-    fileName.value !== '' &&
     (s === 'idle' || s === 'captured' || s === 'stopped' || s === 'error')
   );
 });
@@ -83,10 +149,10 @@ const stopEnabled = computed(
 );
 
 async function startSampling(): Promise<void> {
-  if (!selectedRule.value) return;
+  if (!selectedFile.value || !selectedRule.value) return;
   await dbg.start({
     catalog: 'lal',
-    name: fileName.value,
+    name: selectedFile.value,
     ruleName: selectedRule.value,
     granularity: granularity.value,
     recordCap: recordCap.value,
@@ -94,35 +160,28 @@ async function startSampling(): Promise<void> {
   });
 }
 
-interface LalRow {
+interface LalSampleRow {
   rec: SessionRecord;
-  /** Block-stage flat body. Set on text / parser / extractor /
-   *  outputRecord / outputMetric records. For `line` records this
-   *  pulls the wrapped body out of `payload.body` so the template
-   *  renders the same fields uniformly. */
-  body: LalBlockPayload | null;
-  /** 1-based source line. Only set on `line` stage records (statement
-   *  granularity); null for block stages. */
-  sourceLine: number | null;
+  sample: SessionSample;
+  payload: LalSamplePayload | null;
 }
 
 interface LalNodeView extends NodeSlice {
-  rows: LalRow[];
+  rows: LalSampleRow[];
 }
 
 const nodeViews = computed<LalNodeView[]>(() => {
   const s = dbg.session.value;
   if (!s) return [];
   return s.nodes.map((n) => {
-    const rows: LalRow[] = [];
+    const rows: LalSampleRow[] = [];
     for (const rec of n.records ?? []) {
-      if (!isLalRecord(rec)) continue;
-      if (rec.stage === 'line' && isLalLinePayload(rec.payload)) {
-        rows.push({ rec, body: rec.payload.body, sourceLine: rec.payload.sourceLine });
-      } else if (isLalBlockPayload(rec.payload)) {
-        rows.push({ rec, body: rec.payload, sourceLine: null });
-      } else {
-        rows.push({ rec, body: null, sourceLine: null });
+      for (const sample of rec.samples ?? []) {
+        rows.push({
+          rec,
+          sample,
+          payload: isLalSamplePayload(sample.payload) ? sample.payload : null,
+        });
       }
     }
     return { ...n, rows };
@@ -133,51 +192,74 @@ function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
 }
 
+/** Pull the `LogBuilder` output if the LAL payload has it — used for
+ *  the `tags` summary cell. Returns null on `Message`-typed builders
+ *  or when no output is bound yet. */
+function logBuilderOutput(p: LalSamplePayload | null): LalLogBuilderOutput | null {
+  if (!p?.output) return null;
+  if (p.output.type !== 'LogBuilder') return null;
+  return p.output as LalLogBuilderOutput;
+}
+
+function tagCount(p: LalSamplePayload | null, status: 'original' | 'lal-added' | 'lal-override'): number {
+  const lb = logBuilderOutput(p);
+  if (!lb?.tags) return 0;
+  return lb.tags.filter((t) => t.status === status).length;
+}
+
+/** First-line preview of the LAL log content (truncated). */
+function contentPreview(p: LalSamplePayload | null): string {
+  const lb = logBuilderOutput(p);
+  const c = lb?.content;
+  if (!c) return '';
+  const trimmed = c.trim();
+  return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed;
+}
+
 // ── Source pane plumbing ────────────────────────────────────────────
 
-const hoveredRow = ref<LalRow | null>(null);
+const hoveredRow = ref<LalSampleRow | null>(null);
 
-/** Drive the pane off `selectedRule` (the picked LAL rule). For
- *  runtime-rule-applied LAL the upstream binds the rule under the
- *  rule name in the runtime-rule list, so we use that as `name`. */
+/** The source pane shows the LAL **file** body (which contains all
+ *  inner rules), not just the selected inner rule. The OAP debug
+ *  install passes `name=<file>` and `ruleName=<inner>`; the file is
+ *  what's served by `/runtime/rule?catalog=lal&name=<file>`. */
 const sourceCatalog = computed<'lal' | null>(() =>
-  dbg.session.value === null || !selectedRule.value ? null : 'lal',
+  dbg.session.value === null || !selectedFile.value ? null : 'lal',
 );
 const sourceName = computed<string | null>(() =>
-  dbg.session.value === null ? null : selectedRule.value || null,
+  dbg.session.value === null ? null : selectedFile.value || null,
 );
 const { source: ruleSource, query: sourceQuery } = useRuleSource({
   catalog: sourceCatalog,
   name: sourceName,
 });
 
-const pageHash = computed<string | null>(() => {
+const pageDsl = computed<string | null>(() => {
   const s = dbg.session.value;
   if (!s) return null;
   for (let i = s.nodes.length - 1; i >= 0; i--) {
     const recs = s.nodes[i]!.records;
     if (recs && recs.length > 0) {
-      return recs[recs.length - 1]!.contentHash || null;
+      return recs[recs.length - 1]!.dsl || null;
     }
   }
   return null;
 });
 
-/** LAL highlights:
- *  - `line` stage records: exact match via `row.sourceLine`.
- *  - block stages: pseudo-fragments (`raw`/`parsed`/`fields`/output
- *    class) don't appear in the source as-is; skip highlighting.
- */
+/** LAL highlights. Sample `sourceText` is empty for the input probe
+ *  (no DSL fragment) — fall back to the per-sample `sourceLine` (only
+ *  set in statement-mode) by computing it inside the rule body. The
+ *  source pane lights nothing on input rows in block mode. */
 const highlightedLines = computed<readonly number[]>(() => {
   const row = hoveredRow.value;
   const src = ruleSource.value;
   if (!row || !src) return [];
-  if (row.sourceLine !== null) return [row.sourceLine];
-  // `outputRecord` extras carry the typed-output class name (e.g.
-  // `LogBuilder`); search for it in the body so the operator can see
-  // which YAML key configures the output.
-  if (row.body?.extra?.outputClass) {
-    return findLineMatches(src.content, row.body.extra.outputClass);
+  if (row.sample.sourceText && row.sample.sourceText.length > 0) {
+    return findLineMatches(src.content, row.sample.sourceText);
+  }
+  if (row.sample.sourceLine !== undefined && row.sample.sourceLine > 0) {
+    return [row.sample.sourceLine];
   }
   return [];
 });
@@ -191,15 +273,30 @@ function refetchSource(): void {
   <DebugView :dbg="dbg" :node-views="nodeViews">
     <template #controls>
       <div class="ctl">
-        <label class="ctl__lbl">rule</label>
-        <select v-model="selectedRule" class="ctl__select" @change="onRuleChange">
-          <option value="" disabled>select a LAL rule…</option>
-          <option v-for="n in ruleNames" :key="n" :value="n">{{ n }}</option>
+        <label class="ctl__lbl">rule file</label>
+        <select v-model="selectedFile" class="ctl__select">
+          <option value="" disabled>select a LAL rule file…</option>
+          <option v-for="n in fileNames" :key="n" :value="n">{{ n }}</option>
         </select>
       </div>
-      <div class="ctl">
-        <label class="ctl__lbl">file (with extension)</label>
-        <input v-model="fileName" type="text" class="ctl__input ctl__input--wide" placeholder="default.yaml" />
+      <div class="ctl ctl--grow">
+        <label class="ctl__lbl">rule</label>
+        <select
+          v-model="selectedRule"
+          class="ctl__select"
+          :disabled="selectedFile === '' || ruleContentQuery.isPending.value"
+        >
+          <option value="" disabled>
+            {{ selectedFile === ''
+                ? 'pick a file first…'
+                : ruleContentQuery.isPending.value
+                  ? 'loading…'
+                  : innerRuleNames.length === 0
+                    ? 'no rules found in file'
+                    : 'select a rule…' }}
+          </option>
+          <option v-for="r in innerRuleNames" :key="r" :value="r">{{ r }}</option>
+        </select>
       </div>
       <div class="ctl">
         <label class="ctl__lbl">granularity</label>
@@ -228,16 +325,21 @@ function refetchSource(): void {
       </div>
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
+      <router-link
+        v-if="selectedFile"
+        class="ctl__editlink"
+        :to="{ path: '/edit', query: { catalog: 'lal', name: selectedFile } }"
+        :title="`open lal · ${selectedFile} in the editor`"
+      >open in editor →</router-link>
     </template>
 
     <template #idle-hint>
       pick a LAL rule, set the file (typically <code>{ruleName}.yaml</code>),
-      hit start. each captured log record fills one row per probed stage —
-      the upstream emits text → parser → extractor → outputRecord /
-      outputMetric for kept records. Statement granularity adds one
-      <code>line</code> row per DSL statement. the source pane on the
-      right loads the rule body when you hit start; hover a row to
-      highlight the matching DSL line.
+      hit start. each captured log produces a sequence of samples — input
+      (raw LogData), function (after bindInput; LogBuilder snapshot),
+      output (terminal). statement granularity adds per-statement samples
+      with a 1-based <code>sourceLine</code>. hover a row to highlight the
+      matching DSL line in the source pane.
     </template>
 
     <template #source-pane>
@@ -246,24 +348,25 @@ function refetchSource(): void {
         :loading="sourceQuery.isPending.value"
         :error="sourceQuery.error.value === null ? null : String(sourceQuery.error.value)"
         :highlighted-lines="highlightedLines"
-        :page-hash="pageHash"
+        :page-dsl="pageDsl"
+        lang="lal"
         @refetch="refetchSource"
       />
     </template>
 
     <template #node-body="{ node }">
       <div v-if="node.rows.length === 0" class="lal__empty">
-        no LAL records from this node
+        no LAL samples from this node
       </div>
       <table v-else class="lal__waterfall">
         <thead>
           <tr>
             <th class="lal__line">ln</th>
             <th class="lal__source">source</th>
-            <th class="lal__kind">stage</th>
-            <th class="lal__result">body summary</th>
-            <th class="lal__extra">extra</th>
-            <th class="lal__hash">hash</th>
+            <th class="lal__kind">type</th>
+            <th class="lal__cont">cont</th>
+            <th class="lal__result">summary</th>
+            <th class="lal__tags">tags (orig / added / over)</th>
           </tr>
         </thead>
         <tbody>
@@ -275,34 +378,37 @@ function refetchSource(): void {
             @mouseenter="hoveredRow = row"
             @mouseleave="hoveredRow = null"
           >
-            <td class="lal__line">{{ row.sourceLine ?? '—' }}</td>
-            <td class="lal__source"><code>{{ row.rec.sourceText }}</code></td>
+            <td class="lal__line">{{ row.sample.sourceLine ?? '—' }}</td>
+            <td class="lal__source"><code>{{ row.sample.sourceText || '—' }}</code></td>
             <td class="lal__kind">
-              <Pill :tone="stageTone(row.rec.stage)">{{ row.rec.stage }}</Pill>
+              <Pill :tone="sampleTone(row.sample.type)">{{ row.sample.type }}</Pill>
+            </td>
+            <td class="lal__cont">
+              <Pill :tone="row.sample.continueOn ? 'ok' : 'warn'">
+                {{ row.sample.continueOn ? 'cont' : 'stop' }}
+              </Pill>
             </td>
             <td class="lal__result">
-              <template v-if="row.body">
+              <template v-if="row.payload">
                 <div class="lal__flags">
-                  <span v-if="row.body.aborted" class="lal__flag lal__flag--warn">aborted</span>
-                  <span v-if="row.body.hasOutput" class="lal__flag lal__flag--ok">hasOutput</span>
-                  <span v-if="row.body.hasParsed" class="lal__flag lal__flag--ok">hasParsed</span>
+                  <span v-if="row.payload.aborted" class="lal__flag lal__flag--warn">aborted</span>
+                  <span v-if="row.payload.hasParsed" class="lal__flag lal__flag--ok">parsed</span>
+                  <span
+                    v-if="row.payload.parsedKeys && row.payload.parsedKeys.length > 0"
+                    class="lal__flag"
+                  >parsed[{{ row.payload.parsedKeys.length }}]</span>
+                </div>
+                <div v-if="contentPreview(row.payload)" class="lal__preview">
+                  <code>{{ contentPreview(row.payload) }}</code>
                 </div>
               </template>
             </td>
-            <td class="lal__extra">
-              <template v-if="row.body?.extra">
-                <div v-if="row.body.extra.outputClass" class="lal__extraitem">
-                  <span class="lal__lbl">class</span>
-                  <code>{{ row.body.extra.outputClass }}</code>
-                </div>
-                <div v-if="row.body.extra.samples !== undefined" class="lal__extraitem">
-                  <span class="lal__lbl">samples</span>
-                  {{ row.body.extra.samples }}
-                </div>
-              </template>
-            </td>
-            <td class="lal__hash">
-              <code>{{ shortHash(row.rec.contentHash) }}</code>
+            <td class="lal__tags">
+              <span class="lal__tagcount">{{ tagCount(row.payload, 'original') }}</span>
+              <span class="lal__tagsep">/</span>
+              <span class="lal__tagcount">{{ tagCount(row.payload, 'lal-added') }}</span>
+              <span class="lal__tagsep">/</span>
+              <span class="lal__tagcount">{{ tagCount(row.payload, 'lal-override') }}</span>
             </td>
           </tr>
         </tbody>
@@ -320,7 +426,7 @@ function refetchSource(): void {
 
 .ctl__lbl {
   font-family: var(--rr-font-mono);
-  font-size: 9.5px;
+  font-size: 13px;
   letter-spacing: 1.1px;
   text-transform: uppercase;
   color: var(--rr-dim);
@@ -337,7 +443,7 @@ function refetchSource(): void {
   border: 1px solid var(--rr-border);
   padding: 4px 8px;
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
 }
 
 .ctl__input {
@@ -360,7 +466,7 @@ function refetchSource(): void {
   color: var(--rr-ink2);
   padding: 4px 10px;
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
   cursor: pointer;
 }
 
@@ -375,7 +481,7 @@ function refetchSource(): void {
 
 .lal__empty {
   padding: 14px;
-  font-size: 11.5px;
+  font-size: 15px;
   color: var(--rr-dim);
   font-style: italic;
 }
@@ -383,7 +489,7 @@ function refetchSource(): void {
 .lal__waterfall {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 15.5px;
 }
 
 .lal__waterfall th,
@@ -405,7 +511,7 @@ function refetchSource(): void {
 
 .lal__waterfall th {
   font-family: var(--rr-font-mono);
-  font-size: 9.5px;
+  font-size: 13px;
   letter-spacing: 1.1px;
   text-transform: uppercase;
   color: var(--rr-dim);
@@ -418,7 +524,7 @@ function refetchSource(): void {
 }
 
 .lal__source {
-  width: 140px;
+  width: 200px;
   font-family: var(--rr-font-mono);
   color: var(--rr-ink2);
 }
@@ -430,12 +536,16 @@ function refetchSource(): void {
 }
 
 .lal__kind {
-  width: 130px;
+  width: 110px;
+}
+
+.lal__cont {
+  width: 70px;
 }
 
 .lal__result {
   font-family: var(--rr-font-mono);
-  font-size: 11.5px;
+  font-size: 15px;
 }
 
 .lal__flags {
@@ -449,7 +559,7 @@ function refetchSource(): void {
   padding: 1px 6px;
   background: var(--rr-bg);
   font-family: var(--rr-font-mono);
-  font-size: 10px;
+  font-size: 13.5px;
   color: var(--rr-ink2);
 }
 
@@ -461,30 +571,35 @@ function refetchSource(): void {
   color: var(--rr-warn, #d4a93b);
 }
 
-.lal__extra {
+.lal__preview {
+  margin-top: 4px;
   font-family: var(--rr-font-mono);
-  font-size: 11.5px;
+  font-size: 14.5px;
+  color: var(--rr-dim);
+}
+
+.lal__preview code {
+  background: var(--rr-bg);
+  padding: 1px 4px;
   color: var(--rr-ink2);
 }
 
-.lal__extraitem {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.lal__lbl {
-  color: var(--rr-dim);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  min-width: 60px;
-}
-
-.lal__hash {
-  width: 80px;
+.lal__tags {
+  width: 160px;
   font-family: var(--rr-font-mono);
-  font-size: 11px;
+  font-size: 14.5px;
+  color: var(--rr-ink2);
+}
+
+.lal__tagcount {
+  display: inline-block;
+  min-width: 18px;
+  text-align: right;
+  color: var(--rr-ink);
+}
+
+.lal__tagsep {
   color: var(--rr-dim);
+  margin: 0 4px;
 }
 </style>

@@ -35,6 +35,16 @@ const path = computed(() => route.fullPath);
 
 const sections: NavSection[] = [
   {
+    kicker: 'cluster',
+    links: [
+      {
+        label: 'Cluster status',
+        to: '/cluster',
+        active: (p) => p.startsWith('/cluster'),
+      },
+    ],
+  },
+  {
     kicker: 'catalogs',
     links: [
       {
@@ -65,12 +75,12 @@ const sections: NavSection[] = [
     ],
   },
   {
-    kicker: 'cluster',
+    kicker: 'live debugger',
     links: [
       {
-        label: 'Cluster status',
-        to: '/cluster',
-        active: (p) => p.startsWith('/cluster'),
+        label: 'Live debugger',
+        to: '/debug',
+        active: (p) => p.startsWith('/debug'),
       },
     ],
   },
@@ -85,29 +95,16 @@ const sections: NavSection[] = [
     ],
   },
   {
-    kicker: 'dsl management',
+    /* "DSL Management" was a misleading label — the page is just a
+     * static read-out of the operator's own RBAC verbs. Renamed
+     * "Permissions" so its purpose is obvious. */
+    kicker: 'account',
     links: [
       {
-        label: 'DSL Management',
+        label: 'Permissions',
         to: '/dsl',
         active: (p) => p.startsWith('/dsl'),
       },
-    ],
-  },
-  {
-    kicker: 'live debugger',
-    links: [
-      {
-        label: 'Live debugger',
-        to: '/debug',
-        active: (p) => p.startsWith('/debug'),
-      },
-    ],
-  },
-  {
-    kicker: 'deferred',
-    links: [
-      { label: 'History · diff · rollback', hint: 'later release', disabled: true },
     ],
   },
 ];
@@ -150,7 +147,7 @@ function isActive(link: NavLink): boolean {
 .catalognav {
   padding: 14px 0;
   font-family: var(--rr-font-mono);
-  font-size: 11.5px;
+  font-size: 15px;
 }
 
 .catalognav__section {
@@ -159,7 +156,7 @@ function isActive(link: NavLink): boolean {
 
 .catalognav__kicker {
   padding: 0 16px 6px;
-  font-size: 9.5px;
+  font-size: 13px;
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--rr-dim);
@@ -207,7 +204,7 @@ function isActive(link: NavLink): boolean {
 }
 
 .catalognav__hint {
-  font-size: 9.5px;
+  font-size: 13px;
   color: var(--rr-dim);
   font-style: italic;
 }

@@ -26,13 +26,7 @@
  */
 
 import type { FetchLike } from '@vantage-studio/api-client';
-import {
-  newTraceId,
-  redactHeaders,
-  truncate,
-  wireContext,
-  type WireLogger,
-} from './logger.js';
+import { newTraceId, redactHeaders, truncate, wireContext, type WireLogger } from './logger.js';
 
 export interface WireFetchOptions {
   redactAuthHeaders: boolean;
@@ -54,10 +48,7 @@ export function makeWireFetch(
     let reqBody: string | undefined;
     if (wire.enabled()) {
       if (init?.headers) {
-        reqHeaders = redactHeaders(
-          init.headers as Record<string, string>,
-          opts.redactAuthHeaders,
-        );
+        reqHeaders = redactHeaders(init.headers as Record<string, string>, opts.redactAuthHeaders);
       }
       reqBody = describeBody(init?.body, max);
     }

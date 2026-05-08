@@ -9,25 +9,51 @@
 -->
 <script setup lang="ts">
 /**
- * OAL catalog browse — reflects the actual upstream wire shape:
+ * OAL catalog browse — reads the upstream wire surface:
  *
  *   /runtime/oal/files          → bare file-name list
  *   /runtime/oal/files/{name}   → raw `.oal` text (text/plain)
- *   /runtime/oal/rules          → per-dispatcher listing
- *   /runtime/oal/rules/{source} → single-source detail
  *
- * Two panes:
- *   - left: file list (just names) with on-click reveal of the
- *     raw `.oal` text fetched on demand.
- *   - right: source / dispatcher table — the same data the OAL
- *     debugger's source picker consumes, plus the live/no_holder
- *     status from the per-source detail call.
+ * Single-pane view: file list on the left, line-numbered raw `.oal`
+ * source on the right. The source / dispatcher / metric mapping is
+ * computable from the file content itself; the live debugger picker
+ * uses `/runtime/oal/rules` directly when it actually needs the
+ * runtime-bound dispatcher set.
  */
 import { computed, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { useQuery } from '@tanstack/vue-query';
-import type { OalSourceListing } from '@vantage-studio/api-client';
 import { bff } from '../api/client.js';
 import Pill from '../design/primitives/Pill.vue';
+import { tokenizeLine, type Token } from './syntaxHighlight.js';
+
+const router = useRouter();
+
+/** Detect a rule statement on this line and pull out the metric
+ *  name (LHS of `=`) — the upstream debug install keys on
+ *  `(catalog=oal, name=<file>, ruleName=<metric>)`, NOT the source
+ *  class, so the jump must carry the metric for the picker to land
+ *  on the right rule. OAL rule shape:
+ *    `metricName = from(Source.field).filter(...).function();`
+ *  Lines starting with `disable(` are bundled-rule overrides and
+ *  aren't debuggable; lines starting with `//` or `#` are comments. */
+const RULE_LINE_RE = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*from\s*\(/;
+function ruleMetricFor(line: string): string | null {
+  const trimmed = line.trim();
+  if (trimmed.startsWith('//') || trimmed.startsWith('#')) return null;
+  if (/^disable\s*\(/.test(trimmed)) return null;
+  const m = trimmed.match(RULE_LINE_RE);
+  return m ? m[1]! : null;
+}
+
+function jumpToDebug(metric: string): void {
+  const file = selectedFile.value;
+  if (!file) return;
+  void router.push({
+    path: '/debug/oal',
+    query: { file, ruleName: metric },
+  });
+}
 
 const selectedFile = ref<string | null>(null);
 const fileContent = ref<string | null>(null);
@@ -39,13 +65,7 @@ const filesQuery = useQuery({
   queryFn: async () => bff.oalFiles(),
 });
 
-const sourcesQuery = useQuery({
-  queryKey: ['oal/rules'],
-  queryFn: async () => bff.oalSources(),
-});
-
 const files = computed<string[]>(() => filesQuery.data.value?.files ?? []);
-const sources = computed<OalSourceListing[]>(() => sourcesQuery.data.value?.sources ?? []);
 
 watch(
   () => selectedFile.value,
@@ -74,6 +94,32 @@ watch(
     }
   },
 );
+
+/** Materialise the raw `.oal` body into syntax-highlighted lines so
+ *  the pane can show a line-number gutter alongside coloured tokens.
+ *  Done locally — no DOM measurement, no IntersectionObserver — to
+ *  keep the render predictable. */
+interface FileLine {
+  num: number;
+  tokens: Token[];
+  /** Set when the line carries a debuggable OAL rule statement —
+   *  the metric name (LHS of `=`); surfaces the green ▶ in the
+   *  gutter and feeds the deep-link target. */
+  debugMetric: string | null;
+}
+
+const fileLines = computed<FileLine[]>(() => {
+  const c = fileContent.value;
+  if (c === null) return [];
+  // Trailing-newline split would emit a phantom empty line; trim only
+  // the trailing newline (preserve interior blank lines).
+  const body = c.endsWith('\n') ? c.slice(0, -1) : c;
+  return body.split('\n').map((text, i) => ({
+    num: i + 1,
+    tokens: tokenizeLine(text, 'oal'),
+    debugMetric: ruleMetricFor(text),
+  }));
+});
 </script>
 
 <template>
@@ -82,94 +128,76 @@ watch(
       <h1 class="oal__h1">OAL catalog</h1>
       <Pill tone="dim">read-only</Pill>
       <span class="oal__hint">
-        OAL hot-update is upstream-deferred. Studio surfaces the loaded
-        files + the per-source dispatcher set the live debugger picks
-        from.
+        OAL hot-update is upstream-deferred. Each <code>.oal</code> file
+        defines source classes (the input row the analyzer emits, e.g.
+        <code>Endpoint</code>) and the metrics derived from them.
+        Browse the loaded files below; install a live debug session
+        from
+        <router-link to="/debug" class="oal__link">Live debugger</router-link>
+        to see runtime metric capture.
       </span>
     </header>
 
-    <div class="oal__grid">
-      <!-- Files pane ─────────────────────────────────────────── -->
-      <section class="oal__pane">
-        <header class="oal__paneh">
-          files
-          <span class="oal__panecount">
-            {{ files.length }}
-          </span>
-        </header>
+    <section class="oal__pane">
+      <header class="oal__paneh">
+        files
+        <span class="oal__panecount">{{ files.length }}</span>
+      </header>
 
-        <div v-if="filesQuery.isPending.value" class="oal__loading">loading…</div>
-        <div v-else-if="filesQuery.isError.value" class="oal__error">
-          Could not load OAL files.
-          <button type="button" @click="filesQuery.refetch()">retry</button>
-        </div>
-        <div v-else-if="files.length === 0" class="oal__empty">
-          no `.oal` files loaded
-        </div>
-        <div v-else class="oal__filelistwrap">
-          <ul class="oal__filelist">
-            <li v-for="f in files" :key="f">
-              <button
-                type="button"
-                class="oal__fileitem"
-                :class="{ 'oal__fileitem--active': selectedFile === f }"
-                @click="selectedFile = f"
-              >
-                <code>{{ f }}</code>
-              </button>
-            </li>
-          </ul>
+      <div v-if="filesQuery.isPending.value" class="oal__loading">loading…</div>
+      <div v-else-if="filesQuery.isError.value" class="oal__error">
+        Could not load OAL files.
+        <button type="button" @click="filesQuery.refetch()">retry</button>
+      </div>
+      <div v-else-if="files.length === 0" class="oal__empty">
+        no <code>.oal</code> files loaded
+      </div>
+      <div v-else class="oal__filelistwrap">
+        <ul class="oal__filelist">
+          <li v-for="f in files" :key="f">
+            <button
+              type="button"
+              class="oal__fileitem"
+              :class="{ 'oal__fileitem--active': selectedFile === f }"
+              @click="selectedFile = f"
+            >
+              <code>{{ f }}</code>
+            </button>
+          </li>
+        </ul>
 
-          <div class="oal__filedetail">
-            <header v-if="selectedFile" class="oal__filehead">
-              <code>{{ selectedFile }}</code>
-            </header>
-            <div v-if="fileLoading" class="oal__loading">loading…</div>
-            <div v-else-if="fileError" class="oal__error">{{ fileError }}</div>
-            <pre v-else-if="fileContent !== null" class="oal__filepre">{{ fileContent }}</pre>
-          </div>
+        <div class="oal__filedetail">
+          <header v-if="selectedFile" class="oal__filehead">
+            <code>{{ selectedFile }}</code>
+            <span v-if="fileLines.length > 0" class="oal__filemeta">
+              {{ fileLines.length }} lines
+            </span>
+          </header>
+          <div v-if="fileLoading" class="oal__loading">loading…</div>
+          <div v-else-if="fileError" class="oal__error">{{ fileError }}</div>
+          <pre v-else-if="fileContent !== null" class="oal__filepre"><span
+            v-for="line in fileLines"
+            :key="line.num"
+            class="oal__line"
+            :class="{ 'oal__line--debuggable': line.debugMetric !== null }"
+          ><button
+              v-if="line.debugMetric"
+              type="button"
+              class="oal__dbgbtn"
+              :title="`Live debug: ${line.debugMetric}`"
+              @click="jumpToDebug(line.debugMetric)"
+            >▶</button><span
+              v-else
+              class="oal__dbgslot"
+              aria-hidden="true"
+            ></span><span class="oal__linenum">{{ line.num }}</span><span class="oal__linetext"><span
+            v-for="(tok, ti) in line.tokens"
+            :key="ti"
+            :class="`hl hl--${tok.kind}`"
+          >{{ tok.text }}</span></span></span></pre>
         </div>
-      </section>
-
-      <!-- Sources pane ───────────────────────────────────────── -->
-      <section class="oal__pane">
-        <header class="oal__paneh">
-          sources / dispatchers
-          <span class="oal__panecount">
-            {{ sources.length }}
-          </span>
-        </header>
-
-        <div v-if="sourcesQuery.isPending.value" class="oal__loading">loading…</div>
-        <div v-else-if="sourcesQuery.isError.value" class="oal__error">
-          Could not load OAL sources.
-          <button type="button" @click="sourcesQuery.refetch()">retry</button>
-        </div>
-        <div v-else-if="sources.length === 0" class="oal__empty">
-          no OAL dispatchers registered
-        </div>
-        <table v-else class="oal__sources">
-          <thead>
-            <tr>
-              <th>source</th>
-              <th>dispatcher</th>
-              <th>metrics</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="src in sources" :key="src.source">
-              <td class="oal__srcname"><code>{{ src.source }}</code></td>
-              <td class="oal__dispatcher" :title="src.dispatcher">
-                <code>{{ src.dispatcher }}</code>
-              </td>
-              <td class="oal__srcmetrics">
-                <span v-for="m in src.metrics" :key="m" class="oal__metric">{{ m }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-    </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -181,7 +209,7 @@ watch(
   padding: 18px 24px;
   font-family: var(--rr-font-sans);
   color: var(--rr-ink);
-  height: 100%;
+  height: calc(100vh - 16px);
   min-height: 0;
 }
 
@@ -189,6 +217,8 @@ watch(
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .oal__h1 {
@@ -199,16 +229,22 @@ watch(
 }
 
 .oal__hint {
-  font-size: 11.5px;
+  font-size: 15px;
   color: var(--rr-dim);
+  flex-basis: 100%;
+  line-height: 1.5;
 }
 
-.oal__grid {
-  display: grid;
-  grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.4fr);
-  gap: 14px;
-  flex: 1 1 auto;
-  min-height: 0;
+.oal__hint code {
+  font-family: var(--rr-font-mono);
+  background: var(--rr-bg);
+  padding: 0 4px;
+  color: var(--rr-ink2);
+}
+
+.oal__link {
+  color: var(--rr-active);
+  text-decoration: underline;
 }
 
 .oal__pane {
@@ -218,6 +254,7 @@ watch(
   border: 1px solid var(--rr-border);
   overflow: hidden;
   min-height: 0;
+  flex: 1 1 auto;
 }
 
 .oal__paneh {
@@ -226,11 +263,12 @@ watch(
   justify-content: space-between;
   padding: 8px 12px;
   font-family: var(--rr-font-mono);
-  font-size: 9.5px;
+  font-size: 13px;
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--rr-dim);
   border-bottom: 1px solid var(--rr-border);
+  flex-shrink: 0;
 }
 
 .oal__panecount {
@@ -242,7 +280,7 @@ watch(
 .oal__empty,
 .oal__error {
   padding: 14px;
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-dim);
 }
 
@@ -252,7 +290,7 @@ watch(
 
 .oal__filelistwrap {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 260px 1fr;
   gap: 0;
   flex: 1 1 auto;
   min-height: 0;
@@ -276,7 +314,7 @@ watch(
   text-align: left;
   cursor: pointer;
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-ink);
 }
 
@@ -301,76 +339,96 @@ watch(
 }
 
 .oal__filehead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding: 6px 12px;
   font-family: var(--rr-font-mono);
-  font-size: 11px;
+  font-size: 14.5px;
   color: var(--rr-heading);
   border-bottom: 1px solid var(--rr-border);
   flex-shrink: 0;
 }
 
+.oal__filemeta {
+  font-size: 13px;
+  color: var(--rr-dim);
+  letter-spacing: 0.4px;
+}
+
 .oal__filepre {
   margin: 0;
-  padding: 10px 12px;
+  padding: 0;
   font-family: var(--rr-font-mono);
-  font-size: 11.5px;
+  font-size: 15px;
   color: var(--rr-ink2);
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
   overflow: auto;
   flex: 1 1 auto;
-}
-
-.oal__sources {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.oal__sources th,
-.oal__sources td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--rr-border);
-  text-align: left;
-  vertical-align: top;
-}
-
-.oal__sources th {
-  font-family: var(--rr-font-mono);
-  font-size: 9.5px;
-  letter-spacing: 1.1px;
-  text-transform: uppercase;
-  color: var(--rr-dim);
-}
-
-.oal__srcname {
-  width: 130px;
-  font-family: var(--rr-font-mono);
-  color: var(--rr-heading);
-}
-
-.oal__dispatcher {
-  font-family: var(--rr-font-mono);
-  color: var(--rr-ink2);
-  font-size: 11px;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oal__srcmetrics {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding-top: 4px;
+  flex-direction: column;
 }
 
-.oal__metric {
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  color: var(--rr-ink2);
-  padding: 1px 6px;
-  background: var(--rr-bg);
+.oal__line {
+  display: flex;
+  align-items: baseline;
+  padding: 0 8px 0 0;
+  min-height: 1.5em;
+  white-space: pre;
+}
+
+.oal__line--debuggable:hover {
+  background: var(--rr-bg3);
+}
+
+/* Gutter slot reserved on every line so debuggable / non-debuggable
+   lines stay vertically aligned. The button lives inside the slot
+   on debuggable lines; the slot is empty otherwise. */
+.oal__dbgslot,
+.oal__dbgbtn {
+  display: inline-flex;
+  width: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.oal__dbgbtn {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
+  transition: color 80ms;
+}
+
+.oal__line--debuggable .oal__dbgbtn {
+  color: var(--rr-ok, #7fbf7a);
+}
+
+.oal__dbgbtn:hover,
+.oal__dbgbtn:focus-visible {
+  color: var(--rr-active);
+  outline: none;
+}
+
+.oal__linenum {
+  display: inline-block;
+  width: 36px;
+  text-align: right;
+  margin-right: 10px;
+  color: var(--rr-dim);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.oal__linetext {
+  display: inline-block;
+  white-space: pre;
 }
 </style>

@@ -1,0 +1,82 @@
+{
+  "sessionId": "16a09f7d-945f-4295-9d4c-f207bb0eea08",
+  "capturedAt": 1777987610314,
+  "nodes": [
+    {
+      "nodeId": "0.0.0.0_11800",
+      "status": "ok",
+      "captured": false,
+      "totalBytes": 1988,
+      "records": [
+        {
+          "stage": "filter",
+          "sourceText": "FilterExpression(literal={ tags -> tags.service_name == 'e2e-dsldbg-mal-svc' })",
+          "contentHash": "",
+          "payload": {
+            "samples": 1,
+            "extra": {
+              "kept": true
+            }
+          }
+        },
+        {
+          "stage": "input",
+          "sourceText": "e2e_rr_request_count_total",
+          "contentHash": "",
+          "payload": {
+            "samples": 1
+          }
+        },
+        {
+          "stage": "stage",
+          "sourceText": "sum(['service_name', 'step'])",
+          "contentHash": "",
+          "payload": {
+            "samples": 1
+          }
+        },
+        {
+          "stage": "stage",
+          "sourceText": "service(['service_name'], Layer.GENERAL)",
+          "contentHash": "",
+          "payload": {
+            "samples": 1
+          }
+        },
+        {
+          "stage": "scope",
+          "sourceText": "labeled",
+          "contentHash": "",
+          "payload": {
+            "samples": 1,
+            "extra": {
+              "entities": 1
+            }
+          }
+        },
+        {
+          "stage": "meterBuild",
+          "sourceText": "e2e_dsldbg_filtered_requests",
+          "contentHash": "",
+          "payload": {
+            "metric": "e2e_dsldbg_filtered_requests",
+            "valueType": "DataTable",
+            "entity": "MeterEntity(scopeType=SERVICE, serviceName=e2e-dsldbg-mal-svc, instanceName=null, instanceProperties=null, endpointName=null, processName=null, sourceServiceName=null, destServiceName=null, sourceProcessId=null, destProcessId=null, detectPoint=null, layer=GENERAL, componentId=0, attr0=null, attr1=null, attr2=null, attr3=null, attr4=null, attr5=null)",
+            "value": "AvgLabeledFunction(entityId=ZTJlLWRzbGRiZy1tYWwtc3Zj.1, serviceId=ZTJlLWRzbGRiZy1tYWwtc3Zj.1, summation=DataTable(data={{step=probe}=3}), count=DataTable(data={{step=probe}=1}), value=DataTable(data={}))"
+          }
+        },
+        {
+          "stage": "meterEmit",
+          "sourceText": "e2e_dsldbg_filtered_requests",
+          "contentHash": "",
+          "payload": {
+            "metric": "e2e_dsldbg_filtered_requests",
+            "entity": "MeterEntity(scopeType=SERVICE, serviceName=e2e-dsldbg-mal-svc, instanceName=null, instanceProperties=null, endpointName=null, processName=null, sourceServiceName=null, destServiceName=null, sourceProcessId=null, destProcessId=null, detectPoint=null, layer=GENERAL, componentId=0, attr0=null, attr1=null, attr2=null, attr3=null, attr4=null, attr5=null)",
+            "value": "AvgLabeledFunction(entityId=ZTJlLWRzbGRiZy1tYWwtc3Zj.1, serviceId=ZTJlLWRzbGRiZy1tYWwtc3Zj.1, summation=DataTable(data={{step=probe}=3}), count=DataTable(data={{step=probe}=1}), value=DataTable(data={}))",
+            "timeBucket": 202605051326
+          }
+        }
+      ]
+    }
+  ]
+}

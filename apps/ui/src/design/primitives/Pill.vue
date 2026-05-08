@@ -33,7 +33,7 @@ withDefaults(
   display: inline-flex;
   align-items: center;
   font-family: var(--rr-font-mono);
-  font-size: 10px;
+  font-size: 13.5px;
   font-weight: 500;
   letter-spacing: 0.4px;
   text-transform: uppercase;

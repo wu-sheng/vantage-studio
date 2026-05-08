@@ -35,7 +35,7 @@ describe('Login.vue', () => {
     setActivePinia(createPinia());
   });
 
-  it('submits credentials to /api/auth/login and routes home on 200', async () => {
+  it('submits credentials to /api/auth/login and hard-redirects to /cluster on 200', async () => {
     const fetchMock = vi.fn(async (input: string | URL, _init?: RequestInit) => {
       if (String(input).endsWith('/api/auth/login')) {
         return new Response(
@@ -52,26 +52,43 @@ describe('Login.vue', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const router = makeRouter();
-    await router.push('/login');
-    await router.isReady();
-
-    const wrapper = mount(Login, {
-      global: { plugins: [router] },
+    // The Login view escapes vue-router on success and uses
+    // `window.location.assign` so the next session starts with no
+    // stale router/pinia/vue-query state. Stub it so the test
+    // observes the navigation without a full page reload.
+    const assignMock = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, assign: assignMock },
     });
 
-    await wrapper.find('[data-testid="login-username"]').setValue('alice');
-    await wrapper.find('[data-testid="login-password"]').setValue('pw');
-    await wrapper.find('form').trigger('submit.prevent');
-    await flushPromises();
+    try {
+      const router = makeRouter();
+      await router.push('/login');
+      await router.isReady();
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const init = fetchMock.mock.calls[0]![1] as RequestInit;
-    expect(init.method).toBe('POST');
-    expect(init.body).toBe(JSON.stringify({ username: 'alice', password: 'pw' }));
-    expect(router.currentRoute.value.name).toBe('home');
+      const wrapper = mount(Login, {
+        global: { plugins: [router] },
+      });
 
-    vi.unstubAllGlobals();
+      await wrapper.find('[data-testid="login-username"]').setValue('alice');
+      await wrapper.find('[data-testid="login-password"]').setValue('pw');
+      await wrapper.find('form').trigger('submit.prevent');
+      await flushPromises();
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const init = fetchMock.mock.calls[0]![1] as RequestInit;
+      expect(init.method).toBe('POST');
+      expect(init.body).toBe(JSON.stringify({ username: 'alice', password: 'pw' }));
+      expect(assignMock).toHaveBeenCalledWith('/cluster');
+    } finally {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: originalLocation,
+      });
+      vi.unstubAllGlobals();
+    }
   });
 
   it('shows the invalid-credentials message on 401', async () => {

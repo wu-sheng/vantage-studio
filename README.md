@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="branding/logo.png" alt="Vantage Studio" width="520" />
+</p>
+
 # Vantage Studio
 
 A web admin for Apache SkyWalking's runtime-rule hot-update system —
@@ -71,14 +75,13 @@ vantage-studio/
 
 ## Releases
 
-Tagged releases publish a signed image to GHCR with a CycloneDX SBOM
-attestation. Verify a pulled image:
-
-```bash
-cosign verify ghcr.io/wu-sheng/vantage-studio:0.1.0 \
-  --certificate-identity-regexp 'https://github.com/wu-sheng/vantage-studio/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-```
+Releases are cut by GitHub Actions, not by hand. Push a `vX.Y.Z` tag
+(or run the `Release` workflow manually) and the
+[release.yml](.github/workflows/release.yml) job builds the image,
+publishes `ghcr.io/<repo>:<version>` + `:latest`, signs both with
+cosign keyless, and attaches a CycloneDX SBOM attestation. Commit
+images for `main` are published by [ci.yml](.github/workflows/ci.yml)
+under `:sha-<short>` / `:main`.
 
 ## License
 

@@ -16,16 +16,19 @@
  * `highlightedLines` set: those lines render in bold with a left
  * accent stripe, and the first highlighted line scrolls into view.
  *
- * Hot-update awareness: `pageHash` is the most recent captured
- * record's contentHash; if it differs from the loaded source's
- * contentHash, the pane shows a stale-content banner so the operator
- * knows the source on the right is from a different version of the
- * rule. Operator clicks Refresh to re-fetch.
+ * Hot-update awareness: `pageDsl` is the verbatim rule source from
+ * the most recent captured record. The new wire (post-SWIP-13) drops
+ * the per-record `contentHash` in favour of shipping the full DSL
+ * text on every record, so we compare strings rather than hashes. If
+ * the captured DSL differs from the loaded source body, the pane
+ * surfaces a stale-content banner. The operator hits Refresh to
+ * re-fetch.
  */
 import { computed, nextTick, ref, watch } from 'vue';
 import type { RuleSource } from '../../composables/useRuleSource.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
+import { tokenizeLine, type SyntaxLang, type Token } from '../syntaxHighlight.js';
 
 const props = defineProps<{
   /** Loaded source body. Null while loading / unsupported. */
@@ -36,10 +39,15 @@ const props = defineProps<{
   error: string | null;
   /** 1-based line numbers to highlight. Empty = no rows hovered. */
   highlightedLines: readonly number[];
-  /** SHA-256 from the most recent captured record. When non-empty
-   *  and different from `source.contentHash` we surface the stale-
-   *  source banner. */
-  pageHash: string | null;
+  /** Verbatim DSL from the most recent captured record. When non-
+   *  empty and different from `source.content` we surface the
+   *  stale-source banner. */
+  pageDsl: string | null;
+  /** DSL flavour driving syntax highlighting — `mal` for MAL rule
+   *  YAML, `lal` for LAL rule YAML, `oal` for OAL files. The two
+   *  YAML-shape DSLs reuse their own keyword sets; OAL is its own
+   *  language. */
+  lang: SyntaxLang;
 }>();
 
 const emit = defineEmits<{
@@ -48,14 +56,25 @@ const emit = defineEmits<{
 
 const highlights = computed<Set<number>>(() => new Set(props.highlightedLines));
 
+/** Normalise whitespace for the stale comparison: the pane's
+ *  `source.content` and the on-the-wire `pageDsl` may differ in
+ *  trailing newlines or indentation framing without being a real
+ *  hot-update. Strip leading/trailing whitespace and collapse the
+ *  comparison to a quick equality check on the trimmed string. */
+function normaliseDsl(s: string): string {
+  return s.trim();
+}
+
 const stale = computed<boolean>(() => {
-  if (!props.source || !props.pageHash) return false;
-  return props.pageHash !== props.source.contentHash;
+  if (!props.source) return false;
+  const captured = props.pageDsl;
+  if (!captured || captured.length === 0) return false;
+  return normaliseDsl(captured) !== normaliseDsl(props.source.content);
 });
 
 interface RenderedLine {
   num: number;
-  text: string;
+  tokens: Token[];
   highlighted: boolean;
 }
 
@@ -63,9 +82,10 @@ const renderedLines = computed<RenderedLine[]>(() => {
   const src = props.source;
   if (!src) return [];
   const set = highlights.value;
+  const lang = props.lang;
   return src.lines.map((text, i) => {
     const num = i + 1;
-    return { num, text, highlighted: set.has(num) };
+    return { num, tokens: tokenizeLine(text, lang), highlighted: set.has(num) };
   });
 });
 
@@ -108,9 +128,9 @@ function shortHash(h: string | null | undefined): string {
 
     <div v-if="stale" class="src__stale">
       <span>
-        captures arriving under hash <code>{{ shortHash(pageHash) }}</code> —
-        loaded source is <code>{{ shortHash(source?.contentHash) }}</code>.
-        rule was hot-updated mid-session.
+        captured DSL differs from the loaded source — the rule was
+        hot-updated mid-session. Loaded copy hash:
+        <code>{{ shortHash(source?.contentHash) }}</code>.
       </span>
       <Btn kind="ghost" size="sm" @click="emit('refetch')">refetch</Btn>
     </div>
@@ -124,15 +144,17 @@ function shortHash(h: string | null | undefined): string {
       no source loaded
     </div>
 
-    <pre v-else class="src__body">
-      <span
-        v-for="line in renderedLines"
-        :key="line.num"
-        :ref="(el) => setLineRef(line.num, el as Element | null)"
-        class="src__line"
-        :class="{ 'src__line--hl': line.highlighted }"
-      ><span class="src__num">{{ line.num }}</span><span class="src__text">{{ line.text }}</span></span>
-    </pre>
+    <pre v-else class="src__body"><span
+      v-for="line in renderedLines"
+      :key="line.num"
+      :ref="(el) => setLineRef(line.num, el as Element | null)"
+      class="src__line"
+      :class="{ 'src__line--hl': line.highlighted }"
+    ><span class="src__num">{{ line.num }}</span><span class="src__text"><span
+      v-for="(tok, ti) in line.tokens"
+      :key="ti"
+      :class="`hl hl--${tok.kind}`"
+    >{{ tok.text }}</span></span></span></pre>
   </aside>
 </template>
 
@@ -159,7 +181,7 @@ function shortHash(h: string | null | undefined): string {
 
 .src__title {
   font-family: var(--rr-font-mono);
-  font-size: 9.5px;
+  font-size: 13px;
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--rr-dim);
@@ -167,13 +189,13 @@ function shortHash(h: string | null | undefined): string {
 
 .src__rule {
   font-family: var(--rr-font-mono);
-  font-size: 11.5px;
+  font-size: 15px;
   color: var(--rr-heading);
 }
 
 .src__hash {
   font-family: var(--rr-font-mono);
-  font-size: 10.5px;
+  font-size: 14px;
   color: var(--rr-dim);
   margin-left: auto;
 }
@@ -186,7 +208,7 @@ function shortHash(h: string | null | undefined): string {
   background: var(--rr-bg);
   color: var(--rr-warn, #d4a93b);
   border-bottom: 1px solid var(--rr-border);
-  font-size: 11.5px;
+  font-size: 15px;
 }
 
 .src__stale code {
@@ -197,7 +219,7 @@ function shortHash(h: string | null | undefined): string {
 
 .src__placeholder {
   padding: 14px;
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-dim);
   font-style: italic;
 }
@@ -212,7 +234,7 @@ function shortHash(h: string | null | undefined): string {
   padding: 0;
   overflow: auto;
   font-family: var(--rr-font-mono);
-  font-size: 11.5px;
+  font-size: 15px;
   color: var(--rr-ink2);
   /* Allow long lines to extend horizontally rather than wrap — the
      line-number gutter relies on one DOM line == one source line. */

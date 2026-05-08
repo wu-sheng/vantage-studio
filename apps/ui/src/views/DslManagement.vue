@@ -55,7 +55,7 @@ function holds(v: string): boolean {
 <template>
   <div class="dsl">
     <header class="dsl__header">
-      <h1 class="dsl__h1">DSL Management</h1>
+      <h1 class="dsl__h1">Permissions</h1>
     </header>
 
     <section class="dsl__section">
@@ -152,7 +152,7 @@ function holds(v: string): boolean {
 
 .dsl__sectionhead {
   font-family: var(--rr-font-mono);
-  font-size: 10.5px;
+  font-size: 14px;
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--rr-dim);
@@ -160,7 +160,7 @@ function holds(v: string): boolean {
 
 .dsl__hint {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 16px;
   line-height: 1.55;
   color: var(--rr-ink2);
 }
@@ -170,13 +170,13 @@ function holds(v: string): boolean {
 .dsl__table code {
   font-family: var(--rr-font-mono);
   color: var(--rr-info);
-  font-size: 12px;
+  font-size: 15.5px;
 }
 
 .dsl__list {
   margin: 0;
   padding-left: 18px;
-  font-size: 12.5px;
+  font-size: 16px;
   line-height: 1.6;
   color: var(--rr-ink);
 }
@@ -188,7 +188,7 @@ function holds(v: string): boolean {
 .dsl__table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 15.5px;
 }
 
 .dsl__table th,
@@ -200,7 +200,7 @@ function holds(v: string): boolean {
 
 .dsl__table th {
   font-family: var(--rr-font-mono);
-  font-size: 10px;
+  font-size: 13.5px;
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--rr-dim);

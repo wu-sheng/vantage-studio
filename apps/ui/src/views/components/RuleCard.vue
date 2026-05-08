@@ -67,17 +67,57 @@ function open(): void {
     query: { catalog: props.rule.catalog, name: props.rule.name },
   });
 }
+
+function onKey(ev: KeyboardEvent): void {
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    open();
+  }
+}
+
+/** Live debugger jump target. MAL goes to `/debug/mal?catalog=&name=`
+ *  — the MAL view then loads the file content, parses
+ *  `metricsRules[].name`, and surfaces a metric picker inside (the
+ *  OAP install needs `(name=<file>, ruleName=<metric>)` granularity).
+ *  LAL goes to `/debug/lal?name=<rule>` — LAL rules are file-grained
+ *  on the catalog side already, so the picker is single-step. OAL
+ *  catalog isn't writable; rule cards aren't shown for it. */
+const debugTarget = computed(() => {
+  if (props.rule.catalog === 'lal') {
+    return { path: '/debug/lal', query: { name: props.rule.name } };
+  }
+  return {
+    path: '/debug/mal',
+    query: { catalog: props.rule.catalog, name: props.rule.name },
+  };
+});
+
+function jumpToDebug(ev: MouseEvent): void {
+  ev.stopPropagation();
+  void router.push(debugTarget.value);
+}
 </script>
 
 <template>
+  <!-- Outer is a div (not <button>) so the inner ▶ button can nest
+       without invalid markup. Keyboard support preserved via
+       role+tabindex+keydown. -->
   <button
     type="button"
     class="card"
     :class="{ 'card--suspended': isSuspended, 'card--orphan': rule.status === 'n/a' }"
     :data-testid="`rule-card-${rule.name}`"
     @click="open"
+    @keydown="onKey"
   >
     <div class="card__row">
+      <button
+        type="button"
+        class="card__dbgbtn"
+        :title="`Live debug ${rule.catalog} · ${rule.name}`"
+        :aria-label="`Live debug ${rule.name}`"
+        @click="jumpToDebug"
+      >▶</button>
       <div class="card__name" :title="rule.name">{{ rule.name }}</div>
       <Pill :tone="statusTone">{{ rule.status }}</Pill>
     </div>
@@ -167,7 +207,7 @@ function open(): void {
 
 .card__name {
   font-family: var(--rr-font-mono);
-  font-size: 12.5px;
+  font-size: 16px;
   color: var(--rr-heading);
   font-weight: 500;
   overflow: hidden;
@@ -180,7 +220,7 @@ function open(): void {
   align-items: center;
   gap: 4px;
   font-family: var(--rr-font-mono);
-  font-size: 10px;
+  font-size: 13.5px;
   color: var(--rr-warn);
   letter-spacing: 0.4px;
 }
@@ -189,7 +229,7 @@ function open(): void {
   display: flex;
   gap: 6px;
   font-family: var(--rr-font-mono);
-  font-size: 10.5px;
+  font-size: 14px;
   color: var(--rr-dim);
 }
 
@@ -200,10 +240,38 @@ function open(): void {
 .card__error {
   margin: 0;
   font-family: var(--rr-font-mono);
-  font-size: 10.5px;
+  font-size: 14px;
   color: var(--rr-err);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* IDE-style "run" arrow on the left of every rule name. Sits in the
+   gutter so the rule name's left edge stays aligned across cards. */
+.card__dbgbtn {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: var(--rr-dim);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  width: 16px;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: color 80ms;
+  user-select: none;
+}
+
+.card:hover .card__dbgbtn {
+  color: var(--rr-ok);
+}
+
+.card__dbgbtn:hover,
+.card__dbgbtn:focus-visible {
+  color: var(--rr-active);
+  outline: none;
 }
 </style>

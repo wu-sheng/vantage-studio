@@ -41,7 +41,11 @@ rbac: # OPTIONAL — absent means everyone has full access
   enabled: true
   roles:
     admin: { verbs: ['*'] }
-    operator: { verbs: [rule:read, rule:write, rule:write:structural, rule:delete, rule:debug, cluster:read] }
+    operator:
+      {
+        verbs:
+          [rule:read, rule:write, rule:write:structural, rule:delete, rule:debug, cluster:read],
+      }
     viewer: { verbs: [rule:read, cluster:read] }
 
 session:
@@ -70,11 +74,11 @@ debugLog: # OPTIONAL — wire-level capture for integration testing
 
 ### `oap`
 
-| Field       | Required | Notes                                                                                                                                                                                                                                                                                    |
-| ----------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Field       | Required | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `adminUrls` | yes      | Array of base URLs to OAP's `admin-server` (default port `17128` — same port runtime-rule used standalone before SWIP-13). The BFF fans `/runtime/rule/list` out across every URL for the cluster matrix and fans `/dsl-debugging/status` for the debugger health pane. **Writes** (`addOrUpdate`, `inactivate`, `delete`) hit only the first URL — OAP's forward-RPC handles peer convergence. **Live debugger** session installs hit the first URL too; OAP itself broadcasts `InstallDebugSession` cluster-wide. |
-| `statusUrl` | yes      | OAP query/status plugin URL (default `12800`). Used for `/status/cluster/nodes` lookups.                                                                                                                                                                                                 |
-| `timeoutMs` | no       | Per-call timeout (ms) for every BFF→OAP request. Default `10000`. Set to `0` to disable. The cluster fan-out shares this timeout per node — a slow node times out individually without stalling the whole call.                                                                          |
+| `statusUrl` | yes      | OAP query/status plugin URL (default `12800`). Used for `/status/cluster/nodes` lookups.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `timeoutMs` | no       | Per-call timeout (ms) for every BFF→OAP request. Default `10000`. Set to `0` to disable. The cluster fan-out shares this timeout per node — a slow node times out individually without stalling the whole call.                                                                                                                                                                                                                                                                                                     |
 
 > **OAP-side opt-in.** The admin-server, runtime-rule, and dsl-debugging
 > selectors all default to empty on OAP. Set
@@ -145,11 +149,11 @@ outbound call into a single JSONL file. **Off by default.** Useful
 when integration-testing Studio against a real OAP build to spot
 field-level deviations from the SWIP-13 payload contract.
 
-| Field               | Default                                    | Notes                                                                                                           |
-| ------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `enabled`           | `false`                                    | Hot-reloadable — flip to `true` for a scenario, flip back to `false` afterwards.                                |
-| `file`              | `/var/lib/vantage-studio/debug-wire.jsonl` | Daily rotation is external (same contract as `audit.file`).                                                     |
-| `maxBodyChars`      | `8192`                                     | Per-leaf char cap; longer bodies get a `… +N chars truncated` marker (mirrors SWIP-13 §5's truncation).         |
+| Field               | Default                                    | Notes                                                                                                                               |
+| ------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`           | `false`                                    | Hot-reloadable — flip to `true` for a scenario, flip back to `false` afterwards.                                                    |
+| `file`              | `/var/lib/vantage-studio/debug-wire.jsonl` | Daily rotation is external (same contract as `audit.file`).                                                                         |
+| `maxBodyChars`      | `8192`                                     | Per-leaf char cap; longer bodies get a `… +N chars truncated` marker (mirrors SWIP-13 §5's truncation).                             |
 | `redactAuthHeaders` | `true`                                     | Strips `Cookie` / `Authorization` / `Set-Cookie` / `X-Forwarded-For`. `/api/auth/login` request body is always redacted regardless. |
 
 Each event has a `traceId` shared between the inbound `/api/*`

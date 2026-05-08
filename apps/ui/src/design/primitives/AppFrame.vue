@@ -14,28 +14,55 @@
   limitations under the License.
 -->
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useAuthStore } from '../../stores/auth.js';
-import { useRouter } from 'vue-router';
+import { useQuery } from '@tanstack/vue-query';
+import { bff } from '../../api/client.js';
 import CatalogNav from './CatalogNav.vue';
 import Btn from './Btn.vue';
+import Pill from './Pill.vue';
 
 const auth = useAuthStore();
-const router = useRouter();
 
 async function logout(): Promise<void> {
   await auth.logout();
-  await router.push({ name: 'login' });
+  // Full-page reload so the next session starts cleanly: no
+  // lingering `?redirect=` query, no stale vue-query cache, no
+  // pinia state carry-over.
+  window.location.assign('/login');
 }
+
+/** Cluster-wide DSL classloader posture. `loaderStats` is global on
+ *  every `/runtime/rule/list` response (the catalog filter narrows
+ *  `rules[]`, not `loaderStats`), so the right home for it is the
+ *  app-shell header — visible from every page. Refetched every 15 s
+ *  while the user is authenticated. */
+const loaderStatsQuery = useQuery({
+  queryKey: ['app/loaderStats'],
+  queryFn: async () => {
+    const env = await bff.catalogList();
+    return env.loaderStats;
+  },
+  enabled: computed(() => auth.user !== null),
+  refetchInterval: 15_000,
+});
+
+const loaderStats = computed(() => loaderStatsQuery.data.value ?? null);
 </script>
 
 <template>
   <div class="appframe">
     <header class="appframe__header">
-      <div class="appframe__brand">
-        <span class="appframe__logo">▰</span>
-        <span class="appframe__title">vantage-studio</span>
-      </div>
+      <router-link to="/" class="appframe__brand" aria-label="Vantage Studio · home">
+        <img class="appframe__logo" src="/vs-logo-mark.png" alt="" decoding="async" />
+        <span class="appframe__title">VANTAGE STUDIO</span>
+      </router-link>
       <div class="appframe__spacer" />
+      <div v-if="loaderStats" class="appframe__loaders" title="DSL classloader posture (cluster-global from /runtime/rule/list)">
+        <span class="appframe__loaderlbl">loaders</span>
+        <Pill tone="dim">{{ loaderStats.active }} active</Pill>
+        <Pill v-if="loaderStats.pending > 0" tone="warn">{{ loaderStats.pending }} pending GC</Pill>
+      </div>
       <div v-if="auth.user" class="appframe__user">
         <span class="appframe__userlabel">{{ auth.user.username }}</span>
         <Btn kind="ghost" size="sm" @click="logout">logout</Btn>
@@ -64,31 +91,44 @@ async function logout(): Promise<void> {
 .appframe__header {
   display: flex;
   align-items: center;
-  height: 40px;
-  padding: 0 14px;
-  background: var(--rr-bg2);
+  /* Bar background = #1c2630 (matches `--rr-bg3`, the elevated
+     surface tone). The logo PNG was re-baked with the same
+     #1c2630 ground baked in, so the rectangular outline of the
+     PNG dissolves into the bar at every size — no visible
+     image edge. */
+  height: 64px;
+  padding: 0 20px;
+  background: var(--rr-bg3);
   border-bottom: 1px solid var(--rr-border);
-  gap: 14px;
+  gap: 18px;
   flex-shrink: 0;
+  /* Hairline crimson glow at the bottom edge picks up the brand
+     accent. */
+  box-shadow: inset 0 -1px 0 0 color-mix(in oklab, var(--rr-accent) 30%, transparent);
 }
 
 .appframe__brand {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
+  text-decoration: none;
+  color: inherit;
+}
+.appframe__brand:hover {
+  text-decoration: none;
 }
 
 .appframe__logo {
-  color: var(--rr-active);
-  font-family: var(--rr-font-mono);
-  font-size: 14px;
+  display: block;
+  height: 52px;
+  width: auto;
 }
 
 .appframe__title {
   font-family: var(--rr-font-mono);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 2.6px;
   color: var(--rr-heading);
 }
 
@@ -99,10 +139,27 @@ async function logout(): Promise<void> {
 .appframe__user {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-family: var(--rr-font-mono);
-  font-size: 11px;
+  font-size: 14px;
   color: var(--rr-ink2);
+}
+
+.appframe__loaders {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--rr-font-mono);
+  font-size: 14px;
+  color: var(--rr-ink2);
+}
+
+.appframe__loaderlbl {
+  color: var(--rr-dim);
+  font-size: 12px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  font-weight: 700;
 }
 
 .appframe__userlabel {

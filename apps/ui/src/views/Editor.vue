@@ -57,6 +57,27 @@ interface ConfirmConfig {
 const confirm = ref<ConfirmConfig | null>(null);
 const confirmBusy = ref(false);
 
+/** Live-debugger jump from a `- name: <X>` line in the editor.
+ *  MAL catalogs route to `/debug/mal?catalog=&name=<file>&ruleName=<X>`
+ *  (file + metric — what OAP needs for the install); LAL routes to
+ *  `/debug/lal?name=<X>&file=<file>`. */
+function onDebugClick(ruleName: string): void {
+  const c = catalog.value;
+  const n = name.value;
+  if (!c || !n) return;
+  if (c === 'lal') {
+    void router.push({
+      path: '/debug/lal',
+      query: { name: ruleName, file: n },
+    });
+  } else {
+    void router.push({
+      path: '/debug/mal',
+      query: { catalog: c, name: n, ruleName },
+    });
+  }
+}
+
 const canWriteStructural = computed(() => auth.hasVerb('rule:write:structural'));
 const canDelete = computed(() => auth.hasVerb('rule:delete'));
 const canWrite = computed(() => auth.hasVerb('rule:write'));
@@ -311,6 +332,7 @@ const hasBundledTwin = computed(
         :model-value="editor.buffer.value"
         :catalog="catalog"
         @update:model-value="(v: string) => (editor.buffer.value = v)"
+        @debug-click="onDebugClick"
       />
 
       <div v-else-if="diffMode === 'current'" class="ed__diffhost">
@@ -384,7 +406,7 @@ const hasBundledTwin = computed(
 .ed__h1 {
   margin: 0;
   font-family: var(--rr-font-mono);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 500;
   color: var(--rr-heading);
 }
@@ -424,7 +446,7 @@ const hasBundledTwin = computed(
   border-right: 1px solid var(--rr-border);
   padding: 4px 12px;
   font-family: var(--rr-font-mono);
-  font-size: 11px;
+  font-size: 14.5px;
   cursor: pointer;
 }
 .ed__tab:last-child {
@@ -450,7 +472,7 @@ const hasBundledTwin = computed(
   border-left: 2px solid var(--rr-info);
   border-radius: var(--rr-radius-md);
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-info);
 }
 
@@ -475,7 +497,7 @@ const hasBundledTwin = computed(
   padding: 36px;
   text-align: center;
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-dim);
 }
 
@@ -484,7 +506,7 @@ const hasBundledTwin = computed(
 }
 
 .ed__advanced {
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-ink2);
 }
 
@@ -500,7 +522,7 @@ const hasBundledTwin = computed(
   display: flex;
   gap: 8px;
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-ink2);
 }
 
@@ -511,7 +533,7 @@ const hasBundledTwin = computed(
 
 .ed__force small {
   display: block;
-  font-size: 11px;
+  font-size: 14.5px;
   color: var(--rr-dim);
   line-height: 1.4;
   margin-top: 2px;

@@ -73,8 +73,10 @@ const sampleRules: OalRulesResponse = {
 const sampleDetail: OalSourceDetail = {
   source: 'Endpoint',
   dispatcher: 'org.apache.skywalking.oap.server.core.source.EndpointDispatcher',
-  status: 'live',
-  metrics: ['endpoint_cpm', 'endpoint_sla'],
+  metrics: [
+    { name: 'endpoint_cpm', status: 'live' },
+    { name: 'endpoint_sla', status: 'no_holder' },
+  ],
 };
 
 describe('OalClient', () => {
@@ -127,7 +129,9 @@ describe('OalClient', () => {
     const got = await client.getSource('Endpoint');
 
     expect(got).not.toBeNull();
-    expect(got!.status).toBe('live');
+    expect(got!.metrics[0]!.name).toBe('endpoint_cpm');
+    expect(got!.metrics[0]!.status).toBe('live');
+    expect(got!.metrics[1]!.status).toBe('no_holder');
     expect(calls[0]!.url).toBe('http://oap:17128/runtime/oal/rules/Endpoint');
   });
 

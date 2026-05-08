@@ -37,9 +37,10 @@
  * `<DebugView>` + the DSL's picker + the DSL's row renderer.
  */
 import type {
+  InstallSummary,
   NodeSlice,
   PeerInstallAck,
-  PriorCleanupOutcome,
+  PriorCleanup,
   SessionResponse,
 } from '@vantage-studio/api-client';
 import { computed, type Ref } from 'vue';
@@ -54,7 +55,8 @@ defineProps<{
     error: Ref<string | null>;
     session: Ref<SessionResponse | null>;
     peerAcks: Ref<PeerInstallAck[]>;
-    priorCleanup: Ref<PriorCleanupOutcome[]>;
+    installed: Ref<InstallSummary | null>;
+    priorCleanup: Ref<PriorCleanup | null>;
   };
   /** Per-node pre-shaped view rows. The DSL's `nodeViews` computed
    *  returns NodeSlice-derived objects; the shell only needs
@@ -124,7 +126,8 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
       v-if="dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0"
       :peer-acks="dbg.peerAcks.value"
       :node-statuses="dbg.session.value?.nodes ?? []"
-      :prior-cleanup="dbg.priorCleanup.value"
+      :installed="dbg.installed.value ?? null"
+      :prior-cleanup="dbg.priorCleanup.value ?? null"
     />
 
     <section v-if="dbg.session.value" class="dv__capture">
@@ -190,7 +193,7 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
 
 .dv__sid {
   font-family: var(--rr-font-mono);
-  font-size: 11px;
+  font-size: 14.5px;
   color: var(--rr-dim);
 }
 
@@ -199,7 +202,7 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
   background: var(--rr-bg2);
   border: 1px solid var(--rr-err, #f44);
   color: var(--rr-err, #f44);
-  font-size: 12px;
+  font-size: 15.5px;
   margin: 0;
 }
 
@@ -221,7 +224,7 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
 .dv__sid2 {
   font-family: var(--rr-font-mono);
   color: var(--rr-heading);
-  font-size: 12px;
+  font-size: 15.5px;
 }
 
 .dv__split {
@@ -276,20 +279,20 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
 
 .dv__nodeid {
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-heading);
 }
 
 .dv__bytes {
   margin-left: auto;
   font-family: var(--rr-font-mono);
-  font-size: 11px;
+  font-size: 14.5px;
   color: var(--rr-dim);
 }
 
 .dv__nodeempty {
   padding: 14px;
-  font-size: 11.5px;
+  font-size: 15px;
   color: var(--rr-dim);
   font-style: italic;
 }
@@ -299,7 +302,7 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
   background: var(--rr-bg2);
   border: 1px solid var(--rr-border);
   color: var(--rr-dim);
-  font-size: 12px;
+  font-size: 15.5px;
   margin: 0;
 }
 </style>

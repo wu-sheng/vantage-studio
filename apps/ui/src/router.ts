@@ -25,8 +25,10 @@ const routes: RouteRecordRaw[] = [
     meta: { layout: 'auth', requiresAuth: false },
   },
   {
+    /* Landing page: cluster status. Operators want the cluster
+     * health snapshot first; catalog browse is one click away. */
     path: '/',
-    redirect: '/catalog/otel-rules',
+    redirect: '/cluster',
   },
   {
     path: '/catalog/:catalog',
@@ -66,7 +68,12 @@ const routes: RouteRecordRaw[] = [
     meta: { layout: 'main', requiresAuth: true },
   },
   {
-    path: '/debug',
+    /* /debug                → defaults to MAL tab.
+     * /debug/{mal|lal|oal}  → preselects the named tab; query params
+     *                         (file, name, ruleName, source, …) flow
+     *                         through to the per-DSL view for
+     *                         deep-link auto-fill. */
+    path: '/debug/:tab(mal|lal|oal)?',
     name: 'live-debugger',
     component: () => import('./views/LiveDebugger.vue'),
     meta: { layout: 'main', requiresAuth: true },

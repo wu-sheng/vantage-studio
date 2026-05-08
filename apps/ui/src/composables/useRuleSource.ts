@@ -73,10 +73,7 @@ export interface UseRuleSourceResult {
 
 export function useRuleSource(args: UseRuleSourceArgs): UseRuleSourceResult {
   const enabled = computed<boolean>(
-    () =>
-      args.catalog.value !== null &&
-      args.name.value !== null &&
-      args.name.value !== '',
+    () => args.catalog.value !== null && args.name.value !== null && args.name.value !== '',
   );
 
   const query = useQuery({

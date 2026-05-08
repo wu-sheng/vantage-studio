@@ -16,32 +16,39 @@
 
 /**
  * DSL live-debugger client — `/dsl-debugging/*` endpoints, typed against
- * the **actual wire shape** emitted by `DSLDebuggingRestHandler.java` on
- * the `swip-13-dsl-debugger` branch (not the SWIP-13 design tables, which
- * the implementation diverged from).
+ * the **as-built** wire emitted by `DSLDebuggingRestHandler.java` on the
+ * `swip-13-dsl-debugger` branch. The wire shape was rewritten upstream
+ * (commits 4275f61df5 / 0e4058614c / 6f2db069a0): records now carry an
+ * envelope (`startedAtMs`, `dsl`, `rule`) plus a per-execution
+ * `samples[]` array, and the per-DSL stage vocabulary collapsed to five
+ * unified sample types (`input | filter | function | aggregation |
+ * output`).
  *
  *   POST   /dsl-debugging/session?catalog=&name=&ruleName=&clientId=
- *                                             body (optional JSON):
- *                                             { recordCap?, retentionMillis? }
+ *                                 [&granularity=]
+ *                                 body (optional JSON):
+ *                                 { recordCap?, retentionMillis?,
+ *                                   granularity? }
  *   GET    /dsl-debugging/session/{id}
  *   POST   /dsl-debugging/session/{id}/stop
  *   GET    /dsl-debugging/sessions             — JSON object, not NDJSON
  *   GET    /dsl-debugging/status               — 5-field health snapshot
  *
- * **Wire-shape facts that diverge from the SWIP design tables:**
- *
- * - Inputs are query params, not a JSON body.
- * - No `granularity`, no `blocks?[]`, no `windowSec`, no `maxRecords`. The
- *   caps are `recordCap` (default 1000) and `retentionMillis` (default 5 min).
- * - Session response is one union shape with a single `records[]` whose
- *   entries discriminate via the `stage` field. There is no per-DSL
- *   response type or `granularity`/`reason`/`ruleSnapshots` envelope.
- * - Peer ack values are UPPERCASE enum names
- *   (`INSTALLED|NOT_LOCAL|ALREADY_INSTALLED|REJECTED|FAILED`).
- * - Cluster cleanup of a prior session under the same clientId is
- *   surfaced as `priorCleanup[]` (per-peer with `stoppedSessionIds[]`),
- *   not a single `replacedPriorId`.
- * - No truncation markers on overflow — recordCap just freezes the session.
+ * Notable wire facts:
+ * - Inputs are query params; the optional JSON body carries
+ *   `recordCap` / `retentionMillis` / `granularity` overrides.
+ *   `granularity` query param wins over body.
+ * - The session response carries top-level `ruleKey` + `capturedAt`,
+ *   per-record `startedAtMs` + `dsl` + `rule` envelope, and per-record
+ *   `samples[]` whose entries discriminate via `type`.
+ * - Per-record `contentHash` was removed; the verbatim `dsl` string
+ *   carries hot-update awareness instead.
+ * - `priorCleanup` is now a structured object `{local, peers[]}`, not a
+ *   flat array.
+ * - Peer install ack values are UPPERCASE: `INSTALLED | NOT_LOCAL |
+ *   FAILED`.
+ * - Session-start can fail with `cluster_view_split` (HTTP 421) when
+ *   the cluster's view of the rule disagrees across nodes.
  */
 
 import { RuntimeRuleApiError, type ApplyResult } from './types.js';
@@ -73,11 +80,11 @@ export interface StartSessionQuery {
    *  debugger widget into sessionStorage and reuses it across polls. */
   clientId: string;
   catalog: DebugCatalog;
-  /** For LAL: file name with extension (e.g. `default.yaml`); for
-   *  runtime-rule-applied LAL the upstream uses the rule name as both
-   *  `name` and `ruleName`.
+  /** For LAL: rule file name — the upstream allows either with or
+   *  without an extension; runtime-rule-applied LAL uses the rule
+   *  name directly.
    *  For MAL: the rule's `name` from `/runtime/rule/list`.
-   *  For OAL: source class name (e.g. `Endpoint`). */
+   *  For OAL: source class name (e.g. `Endpoint`, `ServiceRelation`). */
   name: string;
   /** For LAL: the rule within the file (or the rule name for
    *  runtime-rule LAL).
@@ -92,16 +99,18 @@ export interface StartSessionQuery {
 
 /** Optional JSON body for `POST /dsl-debugging/session`. */
 export interface StartSessionBody {
-  /** Default 1000. Session moves to `captured` once this many records
-   *  have been appended. */
+  /** Default 1000, max 10 000. Session moves to `captured` once this
+   *  many records have been appended. */
   recordCap?: number;
-  /** Default 5 min. Wall-clock retention before the session is reaped. */
+  /** Default 5 min, max 1 h (3 600 000 ms). Wall-clock retention
+   *  before the session is reaped. */
   retentionMillis?: number;
+  /** Body fallback for granularity — query param wins when set. */
+  granularity?: Granularity;
 }
 
-/** LAL-only knob — does the recorder also emit per-statement `line`
- *  records, or just the block stages (text / parser / extractor /
- *  outputRecord / outputMetric). Server query param wins over body. */
+/** LAL-only knob — does the recorder emit per-statement records or
+ *  just block-level ones. Server query param wins over body. */
 export type Granularity = 'block' | 'statement';
 
 export const GRANULARITIES: readonly Granularity[] = ['block', 'statement'] as const;
@@ -112,25 +121,62 @@ export function isGranularity(v: unknown): v is Granularity {
 
 export type StartSessionArgs = StartSessionQuery & StartSessionBody;
 
-/** Per-peer install ack from the `InstallDebugSession` fan-out. */
+/** Wire-side ack from the `InstallDebugSession` fan-out. The first
+ *  five come from the proto enum (`InstallState`); `FAILED` is
+ *  appended by the receiving node when the peer call itself failed
+ *  (timeout, RPC error). */
+export type PeerInstallAckState =
+  | 'INSTALLED'
+  | 'NOT_LOCAL'
+  | 'ALREADY_INSTALLED'
+  | 'REJECTED'
+  | 'TOO_MANY_SESSIONS'
+  | 'FAILED';
+
+/** Per-peer install ack. Values are UPPERCASE in the wire. */
 export interface PeerInstallAck {
   peer: string;
   /** Set when the peer responded. */
   nodeId?: string;
-  ack: 'INSTALLED' | 'NOT_LOCAL' | 'ALREADY_INSTALLED' | 'REJECTED' | 'FAILED';
+  ack: PeerInstallAckState;
   detail?: string;
 }
 
-/** Per-peer cleanup outcome from the `StopByClientId` fan-out. The
- *  receiving node also runs its local cleanup and reports it. */
-export interface PriorCleanupOutcome {
+/** At-a-glance "session live on N of M OAPs" summary attached to the
+ *  start-session response. `total` counts the receiving node + every
+ *  reachable peer; `created` counts those that returned `INSTALLED`
+ *  or `ALREADY_INSTALLED`. Per-peer detail lives in `peers[]`. */
+export interface InstallSummary {
+  created: number;
+  total: number;
+}
+
+/** Local node's prior-cleanup outcome — the broadcast also runs locally
+ *  and the receiving node reports the count of prior sessions it
+ *  terminated for the same `clientId`. */
+export interface LocalPriorCleanup {
+  nodeId: string;
+  stoppedCount: number;
+  stoppedSessionIds: string[];
+}
+
+/** Per-peer prior-cleanup outcome from the `StopByClientId` fan-out. */
+export interface PeerPriorCleanup {
   peer: string;
+  /** Set on success. */
   nodeId?: string;
   stoppedCount?: number;
   stoppedSessionIds?: string[];
   /** Set instead of the success fields when the peer call failed. */
   ack?: 'failed';
   detail?: string;
+}
+
+/** Cluster-wide prior-cleanup report. The local slice is always present;
+ *  `peers[]` is one entry per known peer (may be empty in single-node). */
+export interface PriorCleanup {
+  local: LocalPriorCleanup;
+  peers: PeerPriorCleanup[];
 }
 
 export interface RuleKey {
@@ -149,122 +195,267 @@ export interface StartSessionResponse {
   retentionDeadline: number;
   /** Echoed back from the request (or the server default `block`). */
   granularity: Granularity;
+  /** True when the receiving node had the rule loaded and bound a
+   *  recorder locally. False on a router-only node where the install
+   *  was a pure fan-out. */
+  localInstalled: boolean;
+  /** "session live on N of M OAPs" rollup — `created` counts nodes
+   *  whose ack was `INSTALLED` / `ALREADY_INSTALLED`; `total` is
+   *  receiving node + every reachable peer (1 + peers.length). */
+  installed: InstallSummary;
   peers: PeerInstallAck[];
-  priorCleanup: PriorCleanupOutcome[];
+  priorCleanup: PriorCleanup;
 }
 
-// ── Per-DSL stage names + payload shapes ───────────────────────────
+// ── Sample-level shape (the new per-execution capture) ─────────────
 
-/** Every stage name a `record.stage` can carry. The wire union covers
- *  all three DSLs; client code switches on it to pick a payload type. */
-export type Stage =
-  // MAL
-  | 'input'
-  | 'filter'
-  | 'stage'
-  | 'scope'
-  | 'downsample'
-  | 'meterBuild'
-  | 'meterEmit'
-  // LAL
-  | 'text'
-  | 'parser'
-  | 'extractor'
-  | 'outputRecord'
-  | 'outputMetric'
-  | 'line'
-  // OAL
-  | 'source'
-  | 'build'
-  | 'aggregation'
-  | 'emit';
+/** The five unified sample types. The rule's static stage vocabulary
+ *  (per-DSL block names like `meterEmit`, `extractor`, `aggregation`)
+ *  collapsed into these on the wire — each DSL only emits a subset:
+ *
+ *  - MAL: `input | filter | function | output`
+ *  - LAL: `input | filter | function | output`
+ *  - OAL: `input | filter | function | aggregation | output` */
+export type SampleType = 'input' | 'filter' | 'function' | 'aggregation' | 'output';
 
-/** MAL non-terminal payload (input / filter / stage / scope / downsample).
- *  `extra.kept` only on `filter`; `extra.entities` only on `scope`. */
+export const SAMPLE_TYPES: readonly SampleType[] = [
+  'input',
+  'filter',
+  'function',
+  'aggregation',
+  'output',
+] as const;
+
+// ─── MAL payload shapes ────────────────────────────────────────────
+
+/** A single MAL `Sample` row inside a SampleFamily — what the upstream
+ *  ELSampleFamilyDebugDump.toJson surfaces per row. */
+export interface MalSampleRow {
+  name: string;
+  labels: Record<string, string>;
+  /** Numeric value as JSON number (Long / Double / counter). */
+  value: number;
+  /** Unix-ms. */
+  timestamp: number;
+}
+
+/** MAL non-output payload — the captured `SampleFamily.toJson()`.
+ *  `families` only appears on the file-level filter probe, which
+ *  captures the full multi-family input map. The flat case (`samples` +
+ *  `items`) is the per-stage shape every chain method emits. */
 export interface MalSamplesPayload {
+  /** Set on the file-level filter probe only — count of source
+   *  families that fed this filter. */
+  families?: number;
+  /** Sample-row count. `0` together with `empty: true` means the
+   *  family was empty (probe still captured for visibility). */
   samples?: number;
   empty?: boolean;
-  extra?: { kept?: boolean; entities?: number };
+  /** Either flat sample rows (chain-method probes) or nested
+   *  per-family arrays (file-level filter probe). The recorder picks
+   *  the shape based on which probe fired; clients must check. */
+  items?: MalSampleRow[] | MalSamplesPayload[];
 }
 
-/** MAL terminal payload (meterBuild / meterEmit). `valueType` only on
- *  meterBuild; `timeBucket` only on meterEmit. */
-export interface MalMeterPayload {
+/** MAL `output`-type payload (the `appendMeterEmit` probe) — the
+ *  materialised metric ready for L1 push. The recorder emits exactly
+ *  four fields: `metric`, `entity`, `valueType`, `timeBucket`
+ *  (`MALDebugRecorderImpl.meterEmitPayload`). The `AcceptableValue`
+ *  itself isn't serialised — operators read the value off the
+ *  per-stage SampleFamily payloads upstream. */
+export interface MalOutputPayload {
   metric: string;
-  valueType?: string;
+  /** `MeterEntity#toString()` — operator-readable form of the entity
+   *  the metric is bound to (scope, service / instance / endpoint
+   *  names, layer, attrs). */
   entity: string;
-  value: string;
-  timeBucket?: number;
-}
-
-/** LAL block-stage payload — text / parser / extractor / outputRecord
- *  / outputMetric. The upstream emits these flat (no `sourceLine`
- *  wrapper) because block stages aren't tied to a single statement;
- *  the verbatim `record.sourceText` is the locator. */
-export interface LalBlockPayload {
-  aborted?: boolean;
-  hasOutput?: boolean;
-  hasParsed?: boolean;
-  extra?: {
-    /** `outputRecord` only — concrete builder class name. */
-    outputClass?: string;
-    /** `outputMetric` only — sample count handed to MAL. */
-    samples?: number;
-  };
-}
-
-/** LAL line-stage payload — only the `line` stage carries this shape,
- *  and only when the session was started with `granularity=statement`.
- *  `sourceLine` is 1-based and identifies the exact DSL statement that
- *  fired. The body re-uses `LalBlockPayload` for consistency. */
-export interface LalLinePayload {
-  sourceLine: number;
-  body: LalBlockPayload;
-}
-
-/** OAL source / filter payload. */
-export interface OalSourcePayload {
-  type: string;
-  scope?: number;
-  extra?: { kept?: boolean };
-}
-
-/** OAL build / aggregation / emit payload. */
-export interface OalMetricsPayload {
-  type: string;
+  /** Resolved meter function name (e.g. `sum`, `avg`, `histogram`,
+   *  `avgLabeled`) — surfaced via the `@MeterFunction` annotation
+   *  walk so the operator doesn't see the generated subclass name. */
+  valueType: string;
+  /** Time bucket of the emit (yyyyMMddHHmm). */
   timeBucket: number;
 }
 
-export type RecordPayload =
-  | MalSamplesPayload
-  | MalMeterPayload
-  | LalBlockPayload
-  | LalLinePayload
-  | OalSourcePayload
-  | OalMetricsPayload;
+// ─── LAL payload shapes ────────────────────────────────────────────
 
-/** A single captured probe sample. The `stage` field discriminates the
- *  `payload` shape — see the per-DSL payload types above.
+/** LAL `LogData.toJson()` — what the input probe sees on the way in. */
+export interface LalLogDataInput {
+  type: 'LogData';
+  timestamp?: number;
+  service?: string;
+  serviceInstance?: string;
+  endpoint?: string;
+  layer?: string;
+  tags?: { key: string; value: string }[];
+  body?: {
+    contentType?: string;
+    format?: 'TEXT' | 'YAML' | 'JSON';
+    text?: string;
+  };
+  /** Trace identifiers — only when the agent attached them. */
+  traceId?: string;
+  segmentId?: string;
+  spanId?: number;
+  /** Open shape — Envoy access-log path materialises as `Message` /
+   *  alternative inputs that the framework's typed dispatcher
+   *  serialises. */
+  [key: string]: unknown;
+}
+
+/** LAL `Message`-class input (gRPC envelope). The framework's typed
+ *  dispatcher captures whatever the rule's input type is — we model
+ *  the open-payload case here. */
+export interface LalMessageInput {
+  type: 'Message';
+  /** Class name + serialisable proto fields, captured opaquely. */
+  [key: string]: unknown;
+}
+
+/** Tagged-union LAL input. `[type=LogData]` is the common case. */
+export type LalInput = LalLogDataInput | LalMessageInput | { type: string; [k: string]: unknown };
+
+/** LAL `LogBuilder.outputToJson()` — the DB-bound row the rule has
+ *  built so far. Stable shape across stages because the builder is
+ *  cached on `bindInput`. */
+export interface LalLogBuilderOutput {
+  type: 'LogBuilder';
+  name?: string;
+  service?: string;
+  serviceInstance?: string;
+  endpoint?: string;
+  layer?: string;
+  traceId?: string;
+  segmentId?: string;
+  spanId?: number;
+  timestamp?: number;
+  contentType?: string;
+  content?: string;
+  /** Merged-tag view: `original` from input, `lal-added` from the
+   *  rule, `lal-override` when the rule's key collides with an input
+   *  tag (runtime concatenates rather than replaces). */
+  tags?: LalLogBuilderTag[];
+  /** Open shape — EnvoyAccessLogBuilder etc. add custom fields. */
+  [key: string]: unknown;
+}
+
+export interface LalLogBuilderTag {
+  key: string;
+  value: string;
+  status?: 'original' | 'lal-added' | 'lal-override';
+}
+
+/** LAL `Message`-typed builder (e.g. EnvoyAccessLogBuilder). */
+export interface LalMessageBuilderOutput {
+  type: string;
+  [key: string]: unknown;
+}
+
+export type LalOutput = LalLogBuilderOutput | LalMessageBuilderOutput;
+
+/** LAL sample payload — every stage carries the same envelope. The
+ *  input probe populates `input`; bindInput-onwards probes populate
+ *  `output`. Either may be present (rare double-bind cases). */
+export interface LalSamplePayload {
+  /** True when the rule body called `abort()`. */
+  aborted?: boolean;
+  /** True when `parsed` slots have been populated by parser probes. */
+  hasParsed?: boolean;
+  /** Convenience list of keys the parser ran (extractor reads). */
+  parsedKeys?: string[];
+  input?: LalInput;
+  output?: LalOutput;
+}
+
+// ─── OAL payload shapes ────────────────────────────────────────────
+
+/** OAL input / filter payload — the source object's columns. The
+ *  upstream recorder calls `source.toJson()`; the column set is per
+ *  source class. */
+export interface OalSourcePayload {
+  type: string;
+  /** Column-bag — source-class-specific. The first row is `scope:
+   *  number` (the OAL scope ordinal); other rows are operator-readable
+   *  fields like `entityId`, `timeBucket`, `sourceServiceName`, etc. */
+  fields: { scope?: number; entityId?: string; timeBucket?: number; [key: string]: unknown };
+}
+
+/** OAL function / aggregation / output payload — the materialised
+ *  metric class's columns at this probe. The shape is `Metrics#toJson`
+ *  so the field set is per-metric (CPM has `count/total/value`,
+ *  histogram-style metrics have buckets, etc.). */
+export interface OalMetricsPayload {
+  type: string;
+  timeBucket?: number;
+  lastUpdateTimestamp?: number;
+  id?: string;
+  total?: number;
+  value?: number;
+  /** Open shape — per-metric extra columns (count, summation,
+   *  histogram dataset, …). */
+  [key: string]: unknown;
+}
+
+/** Union of every per-DSL payload a sample's `payload` can carry. */
+export type SamplePayload =
+  | MalSamplesPayload
+  | MalOutputPayload
+  | LalSamplePayload
+  | OalSourcePayload
+  | OalMetricsPayload
+  | Record<string, unknown>;
+
+/** A single captured probe sample — one execution step of the DSL
+ *  pipeline. Multiple samples sit inside one `SessionRecord` and
+ *  represent the in-order trace of one rule execution.
  *
- *  No per-record timestamp: probes fire at clock-tick speed and array
- *  order preserves intra-slice ordering. The session response carries
- *  one top-level `capturedAt` stamped when the slice was snapshotted. */
-export interface SessionRecord {
-  stage: Stage;
-  /** Verbatim DSL fragment from ANTLR's input stream. For MAL chain
-   *  stages this is the full call form `sum(['service_name', 'step'])`,
-   *  not just `sum`; for OAL filter records it's `filter(detectPoint
-   *  == DetectPoint.SERVER)` etc. — byte-for-byte matchable against
-   *  the source. LAL block stages use pseudo-fragments (`"raw"`,
-   *  `"parsed"`, `"fields"`) since those probes don't correspond to a
-   *  single DSL line. */
+ *  - `type`: the unified five-state lifecycle position.
+ *  - `sourceText`: verbatim DSL fragment from ANTLR (or empty for
+ *     LAL probes that don't correspond to a single text slice).
+ *  - `continueOn`: did the pipeline continue past this probe? `false`
+ *     on rejected filter branches, on `abort()` calls, on builder
+ *     failures.
+ *  - `payload`: per-DSL shape — see the per-DSL types above.
+ *  - `sourceLine`: 1-based line number in the rule body. Omitted when
+ *     0 / not applicable (block-level LAL probes, MAL chain stages on
+ *     a one-liner rule). */
+export interface SessionSample {
+  type: SampleType;
   sourceText: string;
-  /** SHA-256 hex of the rule content the holder was bound to. Stable
-   *  per holder; a hot-update mid-session creates a new holder with a
-   *  new hash, and pre-update records keep the old hash so the UI can
-   *  render the matching rule version. */
-  contentHash: string;
-  payload: RecordPayload;
+  continueOn: boolean;
+  payload: SamplePayload;
+  sourceLine?: number;
+}
+
+// ── Per-record envelope ────────────────────────────────────────────
+
+/** Catalog-specific structured rule metadata. The recorder fills in
+ *  whatever it has — common fields:
+ *  - all DSLs:  `ruleName`
+ *  - OAL:       `sourceLine` (the OAL source statement's line in the
+ *               .oal file)
+ *  - MAL:       `metricPrefix`, `name`, `filter`, `exp`, `expSuffix`
+ *  - LAL:       `ruleName` only
+ *  Open string-keyed bag — Studio reads selectively. */
+export interface SessionRecordRule {
+  ruleName: string;
+  sourceLine?: string;
+  /** Open: MAL emits multi-field rule metadata (filter, exp, …). */
+  [key: string]: string | undefined;
+}
+
+/** One captured execution of the rule. The verbatim `dsl` is the
+ *  rule source as it stood at capture time — used for hot-update
+ *  awareness (the source pane can compare against `useRuleSource`'s
+ *  loaded body to detect mid-session edits). */
+export interface SessionRecord {
+  /** Unix-ms when the execution started on the receiving node. */
+  startedAtMs: number;
+  /** Verbatim rule source — multi-line, exactly as the holder owned
+   *  it when this execution fired. */
+  dsl: string;
+  rule: SessionRecordRule;
+  samples: SessionSample[];
 }
 
 // ── Per-node slice + session response ──────────────────────────────
@@ -287,11 +478,11 @@ export interface NodeSlice {
 
 export interface SessionResponse {
   sessionId: string;
-  /** Unix-ms when the receiving node snapshotted the slice. Replaces
-   *  the per-record `capturedAt` that earlier wire revisions carried —
-   *  one stamp per snapshot is enough since records are appended at
-   *  clock-tick speed and array order preserves intra-slice ordering. */
+  /** Unix-ms when the receiving node snapshotted the slice. */
   capturedAt: number;
+  /** Echo of the install-time `RuleKey` — omitted when the local
+   *  slice is null (post-stop polls / unknown session). */
+  ruleKey?: RuleKey;
   nodes: NodeSlice[];
 }
 
@@ -341,11 +532,16 @@ export interface DslDebuggingStatus {
 export type DebugErrorCode =
   | 'injection_disabled'
   | 'invalid_catalog'
+  | 'invalid_limits'
+  | 'invalid_granularity'
   | 'missing_param'
   | 'rule_not_found'
+  | 'session_not_found'
   | 'registry_misconfigured'
   | 'source_not_found'
   | 'missing_source'
+  | 'too_many_sessions'
+  | 'cluster_view_split'
   | (string & {});
 
 export interface DebugErrorBody {
@@ -378,8 +574,8 @@ export class DslDebuggingClient {
 
   /** `POST /dsl-debugging/session?catalog=&name=&ruleName=&clientId=
    *  [&granularity=]`, optional JSON body with `recordCap` /
-   *  `retentionMillis`. The query param wins over the body for
-   *  granularity (matches upstream resolution order). */
+   *  `retentionMillis` / `granularity`. The query param wins over the
+   *  body for granularity (matches upstream resolution order). */
   async startSession(args: StartSessionArgs): Promise<StartSessionResponse> {
     const params = new URLSearchParams({
       catalog: args.catalog,
@@ -407,9 +603,9 @@ export class DslDebuggingClient {
     return (await res.json()) as StartSessionResponse;
   }
 
-  /** `GET /dsl-debugging/session/{id}`. Returns `null` only on a
-   *  network 404 (the handler itself doesn't 404 — a missing session
-   *  surfaces as `nodes[0].status: "not_local"`). */
+  /** `GET /dsl-debugging/session/{id}`. Returns `null` on `404
+   *  session_not_found`; live polls return a normal envelope where
+   *  the local slice may be `status: "not_local"` after a stop. */
   async getSession(id: string): Promise<SessionResponse | null> {
     const url = `${this.base}/dsl-debugging/session/${encodeURIComponent(id)}`;
     const res = await this.send(url, { method: 'GET' });
@@ -469,10 +665,9 @@ export class DslDebuggingClient {
     try {
       const json = JSON.parse(text) as Record<string, unknown>;
       // Accept either the legacy `{ applyStatus, message }` envelope
-      // (runtime-rule pipeline) or the new `{ status, code, message }`
-      // envelope (dsl-debugging / runtime-oal). The downstream
-      // `outcomeOf` helper switches on `code` or `applyStatus` so we
-      // pass the raw JSON through under the union type.
+      // (runtime-rule pipeline) or the `{ status, code, message }`
+      // envelope (dsl-debugging / runtime-oal). Downstream `outcomeOf`
+      // helpers switch on `code` or `applyStatus`.
       if (typeof json.applyStatus === 'string' && typeof json.message === 'string') {
         parsed = json as unknown as ApplyResult;
       } else if (

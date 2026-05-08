@@ -61,12 +61,12 @@ withDefaults(
 
 .btn--md {
   padding: 5px 12px;
-  font-size: 12px;
+  font-size: 15.5px;
 }
 
 .btn--sm {
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: 14.5px;
 }
 
 .btn--ghost {

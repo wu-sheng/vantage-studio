@@ -28,41 +28,52 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   });
 }
 
-const sampleResponse = {
+/**
+ * The cluster page renders two sections: per-node reachability and
+ * the dsl-debugging health table. The rules-matrix section was
+ * removed (it overlapped the catalog browse + duplicated the cluster
+ * page's purpose); these tests cover what's actually on the page now.
+ */
+
+const sampleClusterState = {
   generatedAt: 1730000000000,
   nodes: [
     { url: 'http://oap-1:17128', ok: true },
     { url: 'http://oap-2:17128', ok: false, error: 'ECONNREFUSED' },
   ],
-  rules: [
+  rules: [],
+};
+
+const sampleDebugStatus = {
+  generatedAt: 1730000000000,
+  nodes: [
     {
-      catalog: 'otel-rules',
-      name: 'vm',
-      converged: false,
-      perNode: {
-        'http://oap-1:17128': {
-          status: 'ACTIVE',
-          localState: 'RUNNING',
-          contentHash: '7c3a91',
-          lastApplyError: '',
-        },
+      url: 'http://oap-1:17128',
+      ok: true,
+      status: {
+        module: 'dsl-debugging',
+        phase: 'phase-4',
+        nodeId: '0.0.0.0_11800',
+        injectionEnabled: true,
+        activeSessions: 2,
       },
     },
     {
-      catalog: 'lal',
-      name: 'envoy-als',
-      converged: true,
-      perNode: {
-        'http://oap-1:17128': {
-          status: 'BUNDLED',
-          localState: 'RUNNING',
-          contentHash: 'b1d402',
-          lastApplyError: '',
-        },
-      },
+      url: 'http://oap-2:17128',
+      ok: false,
+      error: 'ECONNREFUSED',
     },
   ],
 };
+
+function fetchMock(): ReturnType<typeof vi.fn> {
+  return vi.fn(async (input: string | URL) => {
+    const u = String(input);
+    if (u.includes('/api/cluster/state')) return jsonResponse(sampleClusterState);
+    if (u.includes('/api/debug/status')) return jsonResponse(sampleDebugStatus);
+    throw new Error(`unmocked: ${u}`);
+  });
+}
 
 describe('ClusterStatus.vue', () => {
   let queryClient: QueryClient;
@@ -78,14 +89,8 @@ describe('ClusterStatus.vue', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the per-node strip and per-rule matrix', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: string | URL) => {
-        if (String(input).includes('/api/cluster/state')) return jsonResponse(sampleResponse);
-        throw new Error(`unmocked: ${String(input)}`);
-      }),
-    );
+  it('renders the per-node strip with reachability error labels', async () => {
+    vi.stubGlobal('fetch', fetchMock());
 
     const wrapper = mount(ClusterStatus, {
       global: { plugins: [[VueQueryPlugin, { queryClient }]] },
@@ -96,15 +101,33 @@ describe('ClusterStatus.vue', () => {
     expect(text).toContain('oap-1:17128');
     expect(text).toContain('oap-2:17128');
     expect(text).toContain('ECONNREFUSED');
-    expect(text).toContain('vm');
-    expect(text).toContain('envoy-als');
-    expect(text.toLowerCase()).toContain('1 diverged'); // header summary
   });
 
-  it('shows the empty state when no rules are returned', async () => {
+  it('renders the dsl-debugging health table with injection + active-session columns', async () => {
+    vi.stubGlobal('fetch', fetchMock());
+
+    const wrapper = mount(ClusterStatus, {
+      global: { plugins: [[VueQueryPlugin, { queryClient }]] },
+    });
+    await flushPromises();
+
+    const text = wrapper.text().toLowerCase();
+    expect(text).toContain('dsl-debugging');
+    // Reachable node shows enabled / 2 active sessions.
+    expect(text).toContain('enabled');
+    // Unreachable node shows the unreachable pill + the RPC error.
+    expect(text).toContain('unreachable');
+  });
+
+  it('falls back to the placeholder when /api/debug/status fails', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => jsonResponse({ generatedAt: 0, nodes: [], rules: [] })),
+      vi.fn(async (input: string | URL) => {
+        const u = String(input);
+        if (u.includes('/api/cluster/state')) return jsonResponse(sampleClusterState);
+        if (u.includes('/api/debug/status')) return new Response('boom', { status: 500 });
+        throw new Error(`unmocked: ${u}`);
+      }),
     );
 
     const wrapper = mount(ClusterStatus, {
@@ -112,39 +135,6 @@ describe('ClusterStatus.vue', () => {
     });
     await flushPromises();
 
-    expect(wrapper.text().toLowerCase()).toContain('no rules in the cluster');
-  });
-
-  it('flags errors in the header summary', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        jsonResponse({
-          generatedAt: 0,
-          nodes: [{ url: 'http://oap-1:17128', ok: true }],
-          rules: [
-            {
-              catalog: 'otel-rules',
-              name: 'vm',
-              converged: true,
-              perNode: {
-                'http://oap-1:17128': {
-                  status: 'ACTIVE',
-                  localState: 'RUNNING',
-                  contentHash: '7c3a91',
-                  lastApplyError: 'ddl_verify_failed: …',
-                },
-              },
-            },
-          ],
-        }),
-      ),
-    );
-
-    const wrapper = mount(ClusterStatus, {
-      global: { plugins: [[VueQueryPlugin, { queryClient }]] },
-    });
-    await flushPromises();
-    expect(wrapper.text().toLowerCase()).toContain('1 with errors');
+    expect(wrapper.text().toLowerCase()).toContain('could not load');
   });
 });

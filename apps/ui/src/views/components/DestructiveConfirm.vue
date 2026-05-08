@@ -82,7 +82,7 @@ const armed = computed<boolean>(() => typed.value === props.ruleName);
 <style scoped>
 .dc__intent {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: 16.5px;
   line-height: 1.5;
   color: var(--rr-ink);
 }
@@ -91,13 +91,13 @@ const armed = computed<boolean>(() => typed.value === props.ruleName);
 .dc__label code {
   font-family: var(--rr-font-mono);
   color: var(--rr-active);
-  font-size: 12px;
+  font-size: 15.5px;
 }
 
 .dc__warning {
   margin: 0 0 16px;
   padding-left: 18px;
-  font-size: 12.5px;
+  font-size: 16px;
   line-height: 1.55;
   color: var(--rr-warn);
 }
@@ -110,7 +110,7 @@ const armed = computed<boolean>(() => typed.value === props.ruleName);
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 12px;
+  font-size: 15.5px;
   color: var(--rr-ink2);
   font-family: var(--rr-font-mono);
 }

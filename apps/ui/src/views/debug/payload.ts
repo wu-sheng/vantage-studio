@@ -9,113 +9,80 @@
  */
 
 /**
- * Helpers that discriminate `record.payload` by `record.stage`.
+ * Per-DSL helpers that narrow the unified `SessionSample` payload union.
  *
- * SWIP-13's actual wire emits one `SessionRecord` shape with a
- * `stage` field carrying values across all three DSLs. The recorder
- * picks the payload variant per stage; these predicates let the per-
- * DSL views narrow the union without an `as` cast leaking everywhere.
+ * The wire collapsed the per-DSL stage vocabulary into five sample
+ * types (`input | filter | function | aggregation | output`); each
+ * view already knows its catalog (it picks one from the picker), so
+ * the discriminator is just `sample.type` + the contextual catalog.
+ *
+ * MAL / LAL / OAL all share the five-type vocabulary but emit
+ * different `payload` shapes inside each sample. These predicates let
+ * the views narrow without an `as` cast leaking everywhere.
  */
 
 import type {
-  LalBlockPayload,
-  LalLinePayload,
-  MalMeterPayload,
+  LalSamplePayload,
+  MalOutputPayload,
   MalSamplesPayload,
   OalMetricsPayload,
   OalSourcePayload,
-  RecordPayload,
-  SessionRecord,
-  Stage,
+  SamplePayload,
+  SampleType,
+  SessionSample,
 } from '@vantage-studio/api-client';
 
-const MAL_STAGES: ReadonlySet<Stage> = new Set([
-  'input',
-  'filter',
-  'stage',
-  'scope',
-  'downsample',
-  'meterBuild',
-  'meterEmit',
-]);
-const LAL_STAGES: ReadonlySet<Stage> = new Set([
-  'text',
-  'parser',
-  'extractor',
-  'outputRecord',
-  'outputMetric',
-  'line',
-]);
-const OAL_STAGES: ReadonlySet<Stage> = new Set([
-  'source',
-  'filter',
-  'build',
-  'aggregation',
-  'emit',
-]);
+// ─── MAL ───────────────────────────────────────────────────────────
 
-/** `filter` is a stage shared by MAL and OAL. The payload shape
- *  resolves the ambiguity — MAL filter is a SamplesPayload (has
- *  `samples` / `empty`), OAL filter is a SourcePayload (has `type`). */
-
-export function isMalRecord(rec: SessionRecord): boolean {
-  if (!MAL_STAGES.has(rec.stage)) return false;
-  if (rec.stage !== 'filter') return true;
-  return isMalSamplesPayload(rec.payload);
-}
-
-export function isLalRecord(rec: SessionRecord): boolean {
-  if (!LAL_STAGES.has(rec.stage)) return false;
-  // `line` records carry the wrapped {sourceLine, body} shape; block
-  // stages carry the flat body directly. Either is acceptable.
-  return rec.stage === 'line'
-    ? isLalLinePayload(rec.payload)
-    : isLalBlockPayload(rec.payload);
-}
-
-export function isOalRecord(rec: SessionRecord): boolean {
-  if (!OAL_STAGES.has(rec.stage)) return false;
-  if (rec.stage !== 'filter') return true;
-  return isOalSourcePayload(rec.payload);
-}
-
-export function isMalSamplesPayload(p: RecordPayload): p is MalSamplesPayload {
+/** MAL non-output payload — `SampleFamily.toJson()` shape. Identified
+ *  by the presence of `samples` / `empty` / `items`. The MAL
+ *  file-level filter probe additionally emits a `families` count and
+ *  nests `items[]` as per-family sub-payloads, which we treat as the
+ *  same shape (`isMalSamplesPayload` accepts either). */
+export function isMalSamplesPayload(p: SamplePayload | undefined): p is MalSamplesPayload {
   if (typeof p !== 'object' || p === null) return false;
-  return 'samples' in p || 'empty' in p;
+  return 'samples' in p || 'empty' in p || 'families' in p || 'items' in p;
 }
 
-export function isMalMeterPayload(p: RecordPayload): p is MalMeterPayload {
+/** MAL `output`-type payload — the materialised metric. Identified by
+ *  the presence of `metric` + `entity`. */
+export function isMalOutputPayload(p: SamplePayload | undefined): p is MalOutputPayload {
   if (typeof p !== 'object' || p === null) return false;
-  return 'metric' in p && 'entity' in p && 'value' in p;
+  return 'metric' in p && 'entity' in p;
 }
 
-/** LAL `line` stage payload: `{ sourceLine, body: {...} }`. */
-export function isLalLinePayload(p: RecordPayload): p is LalLinePayload {
+// ─── LAL ───────────────────────────────────────────────────────────
+
+/** LAL sample payload — every stage carries the same `{aborted,
+ *  hasParsed, input?, output?, parsedKeys?}` envelope. Identified by
+ *  the presence of `aborted` / `hasParsed` (non-trivial samples) or
+ *  by carrying a typed `input` / `output` slot. */
+export function isLalSamplePayload(p: SamplePayload | undefined): p is LalSamplePayload {
   if (typeof p !== 'object' || p === null) return false;
-  return 'sourceLine' in p && 'body' in p;
+  return 'aborted' in p || 'hasParsed' in p || 'input' in p || 'output' in p || 'parsedKeys' in p;
 }
 
-/** LAL block-stage payload: flat `{ aborted?, hasOutput?, hasParsed?,
- *  extra? }` — emitted by text / parser / extractor / outputRecord /
- *  outputMetric. */
-export function isLalBlockPayload(p: RecordPayload): p is LalBlockPayload {
+// ─── OAL ───────────────────────────────────────────────────────────
+
+/** OAL input / filter payload — the source object with `fields.scope`. */
+export function isOalSourcePayload(p: SamplePayload | undefined): p is OalSourcePayload {
   if (typeof p !== 'object' || p === null) return false;
-  if ('sourceLine' in p) return false; // that's a line record
-  // Heuristic: all the boolean ctx flags are optional; require the
-  // payload to look like a context summary by accepting empty bodies
-  // too (minimal upstream may emit `{}` for trivial probes).
-  return true;
+  if (!('type' in p) || !('fields' in p)) return false;
+  const fields = (p as { fields: unknown }).fields;
+  return typeof fields === 'object' && fields !== null;
 }
 
-export function isOalSourcePayload(p: RecordPayload): p is OalSourcePayload {
+/** OAL function / aggregation / output payload — the metric class's
+ *  toJson. Identified by `type` + `timeBucket` (every metric carries
+ *  it) without nested `fields`. */
+export function isOalMetricsPayload(p: SamplePayload | undefined): p is OalMetricsPayload {
   if (typeof p !== 'object' || p === null) return false;
-  return 'type' in p && 'scope' in p && !('timeBucket' in p);
+  if (!('type' in p)) return false;
+  if ('fields' in p) return false;
+  return 'timeBucket' in p || 'value' in p || 'total' in p;
 }
 
-export function isOalMetricsPayload(p: RecordPayload): p is OalMetricsPayload {
-  if (typeof p !== 'object' || p === null) return false;
-  return 'type' in p && 'timeBucket' in p;
-}
+// ─── Tone ──────────────────────────────────────────────────────────
 
 /** Short-form a SHA-256 hex into the first 8 chars (or `—` when empty). */
 export function shortHash(h: string | undefined | null): string {
@@ -123,38 +90,40 @@ export function shortHash(h: string | undefined | null): string {
   return h.slice(0, 8);
 }
 
-/**
- * Pill tone for a stage badge. Centralised across MAL / LAL / OAL
- * views so a tone tweak lands in one place.
+/** Pill tone for a sample-type badge. Centralised across MAL / LAL /
+ *  OAL views so a tone tweak lands in one place.
  *
- * Tones reflect pipeline progression: `source`/`input`/`text` are the
- * entry points (ok); `filter` is the gate (warn); transforms /
- * builders are info; the L1-bound terminal stages
- * (`meterEmit`/`emit`/`outputRecord`/`outputMetric`) are active so
- * operators eyes catch them; LAL `line` is warn (statement-mode
- * burns the record cap fast).
- */
-export function stageTone(stage: Stage): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
-  switch (stage) {
-    case 'meterEmit':
-    case 'emit':
-    case 'outputRecord':
-    case 'outputMetric':
+ *  Tones reflect pipeline progression: `input` is the entry point
+ *  (ok); `filter` is the gate (warn); transforms / builders are info;
+ *  the L1-bound terminal `output` is active so operators' eyes catch
+ *  it; `aggregation` (OAL-only) is info. */
+export function sampleTone(t: SampleType): 'ok' | 'warn' | 'info' | 'dim' | 'active' {
+  switch (t) {
+    case 'output':
       return 'active';
-    case 'meterBuild':
-    case 'build':
     case 'aggregation':
-    case 'parser':
-    case 'extractor':
+    case 'function':
       return 'info';
     case 'filter':
-    case 'line':
       return 'warn';
     case 'input':
-    case 'source':
-    case 'text':
       return 'ok';
     default:
       return 'dim';
   }
+}
+
+/** Tone for a sample's `continueOn` flag — operators read at-a-glance
+ *  whether the pipeline kept going past this probe. */
+export function continueTone(continueOn: boolean): 'ok' | 'warn' {
+  return continueOn ? 'ok' : 'warn';
+}
+
+/** True when the sample fired against an empty SampleFamily (MAL only).
+ *  Used to dim such rows in the waterfall — they're informative but
+ *  trivial. */
+export function isEmptySample(sample: SessionSample): boolean {
+  const p = sample.payload;
+  if (typeof p !== 'object' || p === null) return false;
+  return (p as { empty?: boolean }).empty === true;
 }

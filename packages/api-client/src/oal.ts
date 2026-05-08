@@ -40,7 +40,9 @@ export interface OalFilesResponse {
 }
 
 /** One row per dispatcher in the running OAP. The OAL debugger targets a
- *  source — every metric on that source captures together. */
+ *  source — every metric on that source captures together. The listing
+ *  endpoint emits metric names only; per-metric `status` requires the
+ *  per-source detail call (`/runtime/oal/rules/{source}`). */
 export interface OalSourceListing {
   /** OAL source class name without `Dispatcher` suffix, e.g. `Endpoint`. */
   source: string;
@@ -55,12 +57,24 @@ export interface OalRulesResponse {
   count: number;
 }
 
-/** Per-source detail. `status: "live"` means the dispatcher's
- *  `DebugHolderProvider` has a holder ready — a session install will
- *  succeed. `no_holder` means it isn't bound yet (rare race; usually
- *  startup-only). */
-export interface OalSourceDetail extends OalSourceListing {
+/** Per-metric gate state from the per-source detail endpoint.
+ *  `status: "live"` means the dispatcher's `DebugHolderProvider` has a
+ *  holder ready and a session install on this metric will succeed.
+ *  `no_holder` means the codegen knew the metric but no holder was
+ *  bound (test mocks or dispatchers compiled before SWIP-13). */
+export interface OalSourceMetricDetail {
+  name: string;
   status: 'live' | 'no_holder';
+}
+
+/** Per-source detail — same `source` + `dispatcher` as the listing,
+ *  but `metrics` carries per-metric `{name, status}` rather than bare
+ *  strings. The wire has no source-level `status`; the rollup is
+ *  derived per metric. */
+export interface OalSourceDetail {
+  source: string;
+  dispatcher: string;
+  metrics: OalSourceMetricDetail[];
 }
 
 export interface OalClientOptions {

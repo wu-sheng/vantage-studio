@@ -104,10 +104,10 @@ describe('Catalog.vue', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string | URL) => {
-        if (String(input).includes('/api/catalog/list')) {
-          return jsonResponse(sampleEnvelope);
-        }
-        throw new Error(`unmocked: ${String(input)}`);
+        const u = String(input);
+        if (u.includes('/api/catalog/list')) return jsonResponse(sampleEnvelope);
+        if (u.includes('/api/catalog/bundled')) return jsonResponse([]);
+        throw new Error(`unmocked: ${u}`);
       }),
     );
 
@@ -141,7 +141,11 @@ describe('Catalog.vue', () => {
   it('routes to /edit?catalog=&name= on card click', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => jsonResponse(sampleEnvelope)),
+      vi.fn(async (input: string | URL) => {
+        const u = String(input);
+        if (u.includes('/api/catalog/bundled')) return jsonResponse([]);
+        return jsonResponse(sampleEnvelope);
+      }),
     );
 
     const router = makeRouter();
@@ -162,12 +166,18 @@ describe('Catalog.vue', () => {
     expect(router.currentRoute.value.query).toEqual({ catalog: 'otel-rules', name: 'vm' });
   });
 
-  it('shows the empty state when the envelope has no rules', async () => {
+  it('shows the empty state when both /list and /bundled have no rules', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        jsonResponse({ generatedAt: 0, loaderStats: { active: 0, pending: 0 }, rules: [] }),
-      ),
+      vi.fn(async (input: string | URL) => {
+        const u = String(input);
+        if (u.includes('/api/catalog/bundled')) return jsonResponse([]);
+        return jsonResponse({
+          generatedAt: 0,
+          loaderStats: { active: 0, pending: 0 },
+          rules: [],
+        });
+      }),
     );
 
     const router = makeRouter();
@@ -189,6 +199,9 @@ describe('Catalog.vue', () => {
       'fetch',
       vi.fn(async () => new Response('boom', { status: 502 })),
     );
+
+    // Both /list and /bundled fail with 502 above; the merged view
+    // surfaces the error state.
 
     const router = makeRouter();
     await router.push('/catalog/otel-rules');

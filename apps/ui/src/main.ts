@@ -65,8 +65,7 @@ setOn401(() => {
     redirecting = false;
     return;
   }
-  const redirectQs =
-    encodeURIComponent(window.location.pathname + window.location.search);
+  const redirectQs = encodeURIComponent(window.location.pathname + window.location.search);
   window.location.assign(`/login?redirect=${redirectQs}`);
 });
 

@@ -37,11 +37,12 @@ describe('BffClient 401 handler dispatch', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(JSON.stringify({ error: 'unauthenticated' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' },
-        }),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: 'unauthenticated' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          }),
       ),
     );
 
@@ -70,8 +71,8 @@ describe('BffClient 401 handler dispatch', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(JSON.stringify({ error: 'unauthenticated' }), { status: 401 }),
+      vi.fn(
+        async () => new Response(JSON.stringify({ error: 'unauthenticated' }), { status: 401 }),
       ),
     );
 
@@ -85,11 +86,12 @@ describe('BffClient 401 handler dispatch', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response('', {
-          status: 401,
-          headers: { 'Content-Type': 'application/x-yaml' },
-        }),
+      vi.fn(
+        async () =>
+          new Response('', {
+            status: 401,
+            headers: { 'Content-Type': 'application/x-yaml' },
+          }),
       ),
     );
 

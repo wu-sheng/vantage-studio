@@ -53,7 +53,7 @@ defineProps<{
 
 .section__kicker {
   font-family: var(--rr-font-mono);
-  font-size: 10px;
+  font-size: 13.5px;
   letter-spacing: 1px;
   text-transform: uppercase;
   color: var(--rr-dim);
@@ -61,7 +61,7 @@ defineProps<{
 
 .section__title {
   font-family: var(--rr-font-ui);
-  font-size: 13px;
+  font-size: 16.5px;
   font-weight: 500;
   color: var(--rr-heading);
 }

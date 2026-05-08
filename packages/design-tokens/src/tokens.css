@@ -20,24 +20,24 @@
 
 :root,
 [data-theme='dark'] {
-  --rr-bg: #15130f;
-  --rr-bg2: #1b1814;
-  --rr-bg3: #221e19;
-  --rr-panel: #1e1b16;
-  --rr-border: #2b2721;
-  --rr-border2: #393329;
-  --rr-dim: #6b6359;
-  --rr-ink: #d9d2c5;
-  --rr-ink2: #a8a094;
-  --rr-heading: #efeadb;
-  --rr-accent: oklch(0.82 0.14 75);
-  --rr-accentDim: oklch(0.62 0.11 75);
-  --rr-active: #f3b35a;
-  --rr-ok: #7fbf7a;
-  --rr-warn: #e5a84a;
-  --rr-err: #e87166;
-  --rr-info: #6ba3d6;
-  --rr-violet: #a990e6;
+  --rr-bg: #0d141a;
+  --rr-bg2: #131c24;
+  --rr-bg3: #1c2630;
+  --rr-panel: #182128;
+  --rr-border: #232f39;
+  --rr-border2: #354352;
+  --rr-dim: #5e6c79;
+  --rr-ink: #c8d1d9;
+  --rr-ink2: #8a96a3;
+  --rr-heading: #e6edf3;
+  --rr-accent: #e23a48;
+  --rr-accentDim: #a52837;
+  --rr-active: #e23a48;
+  --rr-ok: #4ec9b0;
+  --rr-warn: #f0b454;
+  --rr-err: #ff5e5e;
+  --rr-info: #6db4d6;
+  --rr-violet: #b794e4;
 
   --rr-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --rr-font-ui: Inter, -apple-system, 'Segoe UI', system-ui, sans-serif;
@@ -59,22 +59,22 @@
 }
 
 [data-theme='light'] {
-  --rr-bg: #f6f3ec;
-  --rr-bg2: #ecead9;
-  --rr-bg3: #e4e1d0;
+  --rr-bg: #f0f3f6;
+  --rr-bg2: #e3e8ed;
+  --rr-bg3: #d3dae1;
   --rr-panel: #ffffff;
-  --rr-border: #d6d1c2;
-  --rr-border2: #c2bca9;
-  --rr-dim: #8a8475;
-  --rr-ink: #2a2721;
-  --rr-ink2: #5a5548;
-  --rr-heading: #141210;
-  --rr-accent: oklch(0.58 0.14 60);
-  --rr-accentDim: oklch(0.7 0.11 60);
-  --rr-active: #b8772a;
-  --rr-ok: #3e8a48;
-  --rr-warn: #b37a15;
-  --rr-err: #c14a3e;
-  --rr-info: #2e6da6;
-  --rr-violet: #6b4bbf;
+  --rr-border: #c0c8d0;
+  --rr-border2: #aab2bb;
+  --rr-dim: #6e7783;
+  --rr-ink: #1c2530;
+  --rr-ink2: #4a5666;
+  --rr-heading: #0a1118;
+  --rr-accent: #c91f2c;
+  --rr-accentDim: #a01821;
+  --rr-active: #c91f2c;
+  --rr-ok: #2c8f7a;
+  --rr-warn: #b4801a;
+  --rr-err: #c92e3e;
+  --rr-info: #2576a8;
+  --rr-violet: #6b4ec0;
 }

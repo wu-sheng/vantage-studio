@@ -24,13 +24,7 @@
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import {
-  newTraceId,
-  redactHeaders,
-  truncate,
-  wireContext,
-  type WireLogger,
-} from './logger.js';
+import { newTraceId, redactHeaders, truncate, wireContext, type WireLogger } from './logger.js';
 
 export interface RegisterWireHookOptions {
   /** Mirrors `studio.yaml.debugLog.redactAuthHeaders`. */

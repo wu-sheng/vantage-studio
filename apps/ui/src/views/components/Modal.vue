@@ -87,7 +87,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 
 .modal__title {
   font-family: var(--rr-font-mono);
-  font-size: 12px;
+  font-size: 15.5px;
   letter-spacing: 0.4px;
   color: var(--rr-heading);
 }
@@ -108,7 +108,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 .modal__body {
   padding: 16px;
   overflow: auto;
-  font-size: 13px;
+  font-size: 16.5px;
   color: var(--rr-ink);
 }
 

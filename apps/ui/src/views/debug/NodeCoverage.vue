@@ -18,17 +18,24 @@
  * address or nodeId).
  *
  * Wire enums (from `DSLDebuggingRestHandler.java`):
- * - install ack: INSTALLED | NOT_LOCAL | ALREADY_INSTALLED | REJECTED | FAILED.
+ * - install ack: INSTALLED | NOT_LOCAL | ALREADY_INSTALLED | REJECTED |
+ *   TOO_MANY_SESSIONS | FAILED.
  * - collect status: ok | captured | not_local | unreachable.
  */
 import { computed } from 'vue';
-import type { NodeSlice, PeerInstallAck, PriorCleanupOutcome } from '@vantage-studio/api-client';
+import type {
+  InstallSummary,
+  NodeSlice,
+  PeerInstallAck,
+  PriorCleanup,
+} from '@vantage-studio/api-client';
 import Pill from '../../design/primitives/Pill.vue';
 
 const props = defineProps<{
   peerAcks: PeerInstallAck[];
   nodeStatuses: NodeSlice[];
-  priorCleanup: PriorCleanupOutcome[];
+  installed: InstallSummary | null;
+  priorCleanup: PriorCleanup | null;
 }>();
 
 interface Row {
@@ -76,11 +83,13 @@ const rows = computed<Row[]>(() => {
 function installTone(ack: PeerInstallAck['ack'] | null): 'ok' | 'warn' | 'err' | 'dim' {
   switch (ack) {
     case 'INSTALLED':
+    case 'ALREADY_INSTALLED':
       return 'ok';
     case 'NOT_LOCAL':
-    case 'ALREADY_INSTALLED':
       return 'dim';
+    case 'TOO_MANY_SESSIONS':
     case 'REJECTED':
+      return 'warn';
     case 'FAILED':
       return 'err';
     default:
@@ -103,23 +112,40 @@ function collectTone(status: NodeSlice['status'] | null): 'ok' | 'warn' | 'err' 
 }
 
 const cleanupSummary = computed<string>(() => {
-  const totalStopped = props.priorCleanup.reduce(
-    (n, c) => n + (c.stoppedCount ?? c.stoppedSessionIds?.length ?? 0),
+  const c = props.priorCleanup;
+  if (!c) return '';
+  const localStopped = c.local.stoppedCount ?? 0;
+  const peerStopped = c.peers.reduce(
+    (n, p) => n + (p.stoppedCount ?? p.stoppedSessionIds?.length ?? 0),
     0,
   );
-  if (totalStopped === 0) return '';
-  const ids: string[] = [];
-  for (const c of props.priorCleanup) {
-    if (c.stoppedSessionIds) ids.push(...c.stoppedSessionIds);
+  const total = localStopped + peerStopped;
+  if (total === 0) return '';
+  const ids: string[] = [...(c.local.stoppedSessionIds ?? [])];
+  for (const p of c.peers) {
+    if (p.stoppedSessionIds) ids.push(...p.stoppedSessionIds);
   }
   return ids.length > 0
-    ? `replaced ${totalStopped} prior session${totalStopped === 1 ? '' : 's'}: ${ids.join(', ')}`
-    : `replaced ${totalStopped} prior session${totalStopped === 1 ? '' : 's'}`;
+    ? `replaced ${total} prior session${total === 1 ? '' : 's'}: ${ids.join(', ')}`
+    : `replaced ${total} prior session${total === 1 ? '' : 's'}`;
 });
 </script>
 
 <template>
   <div class="cov">
+    <div v-if="installed" class="cov__rollup">
+      <span class="cov__label">installed</span>
+      <Pill :tone="installed.created === 0 ? 'err' : installed.created === installed.total ? 'ok' : 'warn'">
+        {{ installed.created }} / {{ installed.total }}
+      </Pill>
+      <span class="cov__rollupnote">
+        {{ installed.created === installed.total
+          ? 'session live on every reachable OAP'
+          : installed.created === 0
+            ? 'no node accepted'
+            : `live on ${installed.created} of ${installed.total} nodes` }}
+      </span>
+    </div>
     <div v-if="rows.length === 0" class="cov__empty">no peers reported</div>
     <div v-for="row in rows" :key="row.key" class="cov__row">
       <span class="cov__nodeid">{{ row.label }}</span>
@@ -144,7 +170,7 @@ const cleanupSummary = computed<string>(() => {
   padding: 8px 12px;
   background: var(--rr-bg2);
   border: 1px solid var(--rr-border);
-  font-size: 11.5px;
+  font-size: 15px;
 }
 
 .cov__empty {
@@ -173,7 +199,7 @@ const cleanupSummary = computed<string>(() => {
 .cov__label {
   color: var(--rr-dim);
   font-family: var(--rr-font-mono);
-  font-size: 10px;
+  font-size: 13.5px;
   text-transform: uppercase;
   letter-spacing: 1px;
 }
@@ -181,7 +207,21 @@ const cleanupSummary = computed<string>(() => {
 .cov__cleanup {
   flex-basis: 100%;
   color: var(--rr-dim);
-  font-size: 11px;
+  font-size: 14.5px;
   font-family: var(--rr-font-mono);
+}
+
+.cov__rollup {
+  flex-basis: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.cov__rollupnote {
+  color: var(--rr-dim);
+  font-family: var(--rr-font-mono);
+  font-size: 14.5px;
 }
 </style>
