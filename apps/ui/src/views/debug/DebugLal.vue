@@ -593,15 +593,50 @@ const sourceDslLines = computed<string[]>(() => {
   return [];
 });
 
-/** Map of 1-based DSL line → step key. Lets the source panel show a
- *  hook arrow only on lines that actually fired a function probe in
- *  this capture, and lets the click handler resolve to the right
- *  step's sticky highlight state. */
+/** Map of 1-based DSL line → step key for STATEMENT-mode functions.
+ *  Lets the source panel show a hook arrow only on lines that
+ *  actually fired a function probe in this capture, and lets the
+ *  click handler resolve to the right step's sticky highlight
+ *  state. */
 const stepKeyByLine = computed<Map<number, string>>(() => {
   const map = new Map<number, string>();
   for (const view of nodeViews.value) {
     for (const step of view.steps) {
-      if (step.sourceLine > 0) map.set(step.sourceLine, step.key);
+      if (step.type === 'function' && step.sourceLine > 0) {
+        map.set(step.sourceLine, step.key);
+      }
+    }
+  }
+  return map;
+});
+
+/** Block-mode hooks. In block granularity the recorder fires one
+ *  function probe per record — the post-extractor LogBuilder
+ *  snapshot — with `sourceLine: 0` (no specific line). The natural
+ *  anchor is the `extractor {` block opening line; we detect it via
+ *  regex on the DSL and pin the block-mode step's key there so the
+ *  same click-to-jump interaction works. Rendered with a red arrow
+ *  to distinguish from per-statement hooks. */
+const blockHookByLine = computed<Map<number, string>>(() => {
+  const map = new Map<number, string>();
+  const blockSteps: string[] = [];
+  for (const view of nodeViews.value) {
+    for (const step of view.steps) {
+      if (step.type === 'function' && step.sourceLine === 0) {
+        blockSteps.push(step.key);
+      }
+    }
+  }
+  if (blockSteps.length === 0) return map;
+  const lines = sourceDslLines.value;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*extractor\s*\{/.test(lines[i]!)) {
+      // First extractor block carries the first block-mode step;
+      // multiple block-mode steps would be unusual but we'd map
+      // them to subsequent block openings the same way.
+      const stepKey = blockSteps.shift();
+      if (stepKey !== undefined) map.set(i + 1, stepKey);
+      if (blockSteps.length === 0) break;
     }
   }
   return map;
@@ -945,9 +980,11 @@ void TAG_STATUS_TONE;
             class="lal__srctogglebtn"
             :class="{ 'lal__srctogglebtn--on': sourcePanelOpen }"
             :disabled="sourceDslLines.length === 0"
+            :title="sourcePanelOpen ? 'fold captured DSL panel' : 'show captured DSL panel'"
+            :aria-label="sourcePanelOpen ? 'fold captured DSL panel' : 'show captured DSL panel'"
             @click="sourcePanelOpen = !sourcePanelOpen"
           >
-            {{ sourcePanelOpen ? 'hide source' : 'show source' }}
+            <span class="lal__srctogglechev">{{ sourcePanelOpen ? '«' : '»' }}</span>
           </button>
         </header>
         <div class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
@@ -961,15 +998,26 @@ void TAG_STATUS_TONE;
               v-for="(line, li) in sourceDslLines"
               :key="li"
               class="lal__sourceline"
-              :class="{ 'lal__sourceline--linked': stepKeyByLine.get(li + 1) !== undefined }"
+              :class="{
+                'lal__sourceline--linked':
+                  stepKeyByLine.get(li + 1) !== undefined ||
+                  blockHookByLine.get(li + 1) !== undefined,
+              }"
             >
               <span class="lal__sourcelno">{{ li + 1 }}</span>
               <button
                 v-if="stepKeyByLine.get(li + 1)"
                 type="button"
                 class="lal__sourcehook"
-                title="jump to this step in the matrix"
+                title="jump to this statement's row in the matrix"
                 @click="jumpToStep(stepKeyByLine.get(li + 1)!)"
+              >▶</button>
+              <button
+                v-else-if="blockHookByLine.get(li + 1)"
+                type="button"
+                class="lal__sourcehook lal__sourcehook--block"
+                title="jump to the block-mode extractor row in the matrix"
+                @click="jumpToStep(blockHookByLine.get(li + 1)!)"
               >▶</button>
               <span v-else class="lal__sourcehookbox" />
               <code class="lal__sourcetext">{{ line || ' ' }}</code>
@@ -1303,6 +1351,17 @@ void TAG_STATUS_TONE;
   color: var(--rr-heading);
 }
 
+/* Block-mode hook (extractor block opening line) — distinct red so
+ * it visually reads as "jump to the whole-block snapshot row" rather
+ * than a per-statement hook. */
+.lal__sourcehook--block {
+  color: var(--rr-err, #f44);
+}
+
+.lal__sourcehook--block:hover {
+  color: var(--rr-warn, #d6a96d);
+}
+
 .lal__sourcehookbox {
   display: inline-block;
   width: 18px;
@@ -1325,11 +1384,20 @@ void TAG_STATUS_TONE;
   border: 1px solid var(--rr-border);
   color: var(--rr-ink2);
   font-family: var(--rr-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-  padding: 3px 10px;
+  font-size: 14px;
+  line-height: 1;
+  width: 26px;
+  height: 22px;
+  padding: 0;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lal__srctogglechev {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .lal__srctogglebtn:hover:not(:disabled) {
