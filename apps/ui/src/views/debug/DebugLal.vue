@@ -30,6 +30,7 @@ import type {
   BundledEntry,
   Granularity,
   LalLogBuilderOutput,
+  LalLogBuilderTag,
   LalLogDataInput,
   LalSamplePayload,
   ListEnvelope,
@@ -398,6 +399,36 @@ function inputEntries(p: LalSamplePayload | null): KvEntry[] {
   ];
 }
 
+/** The agent-supplied log tags (`code.filepath`, `os.type`,
+ *  `gen_ai.*`, …). These pre-LAL tags are the raw key/value bag the
+ *  OTLP exporter sent with the log; LAL rules read them via
+ *  `tag("…")` and may overwrite or extend them, but the input
+ *  sample captures them verbatim. */
+function inputTags(p: LalSamplePayload | null): { key: string; value: string }[] {
+  const inp = logDataInput(p);
+  return inp?.tags ?? [];
+}
+
+/** Split the merged-tag view on a LogBuilder snapshot into two
+ *  semantic groups so the operator can tell at a glance what survived
+ *  from the agent vs. what the rule added:
+ *  - `carried` — tags whose status is `original`; came in on the
+ *    LogData and weren't touched by the rule.
+ *  - `added` — tags the rule created or overwrote; covers both
+ *    `lal-added` (new) and `lal-override` (key collided with an input
+ *    tag, runtime concatenated). */
+function carriedTags(p: LalSamplePayload | null): LalLogBuilderTag[] {
+  const out = logBuilderOutput(p);
+  if (!out?.tags) return [];
+  return out.tags.filter((t) => t.status === 'original');
+}
+
+function addedTags(p: LalSamplePayload | null): LalLogBuilderTag[] {
+  const out = logBuilderOutput(p);
+  if (!out?.tags) return [];
+  return out.tags.filter((t) => t.status === 'lal-added' || t.status === 'lal-override');
+}
+
 function outputEntries(p: LalSamplePayload | null): KvEntry[] {
   const out = logBuilderOutput(p);
   if (!out) return [];
@@ -750,6 +781,16 @@ void TAG_STATUS_TONE;
                 </div>
               </div>
               <div
+                v-if="inputTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null).length > 0"
+                class="lal__tags"
+              >
+                <span
+                  v-for="(t, ti) in inputTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
+                  :key="ti"
+                  class="lal__tag lal__tag--orig"
+                >{{ t.key }}={{ t.value }}</span>
+              </div>
+              <div
                 v-if="bodyPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
                 class="lal__body"
               >
@@ -768,18 +809,26 @@ void TAG_STATUS_TONE;
                 </div>
               </div>
               <div
-                v-if="logBuilderOutput(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)?.tags?.length"
-                class="lal__tags"
+                v-if="carriedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null).length > 0"
+                class="lal__taggroup"
               >
+                <span class="lal__tagheader">carried</span>
                 <span
-                  v-for="(t, ti) in logBuilderOutput(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)?.tags ?? []"
-                  :key="ti"
+                  v-for="(t, ti) in carriedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
+                  :key="`o-${ti}`"
+                  class="lal__tag lal__tag--orig"
+                >{{ t.key }}={{ t.value }}</span>
+              </div>
+              <div
+                v-if="addedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null).length > 0"
+                class="lal__taggroup"
+              >
+                <span class="lal__tagheader">+ added</span>
+                <span
+                  v-for="(t, ti) in addedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
+                  :key="`a-${ti}`"
                   class="lal__tag"
-                  :class="{
-                    'lal__tag--orig': t.status === 'original',
-                    'lal__tag--add': t.status === 'lal-added',
-                    'lal__tag--over': t.status === 'lal-override',
-                  }"
+                  :class="t.status === 'lal-override' ? 'lal__tag--over' : 'lal__tag--add'"
                 >{{ t.key }}={{ t.value }}</span>
               </div>
               <div
@@ -885,6 +934,16 @@ void TAG_STATUS_TONE;
                       <span class="lal__kvv">{{ kv.v }}</span>
                     </div>
                   </div>
+                  <div
+                    v-if="inputTags(cellAt(node, step, rv.recIdx)?.payload ?? null).length > 0"
+                    class="lal__tags"
+                  >
+                    <span
+                      v-for="(t, ti) in inputTags(cellAt(node, step, rv.recIdx)?.payload ?? null)"
+                      :key="ti"
+                      class="lal__tag lal__tag--orig"
+                    >{{ t.key }}={{ t.value }}</span>
+                  </div>
                   <div v-if="bodyPreview(cellAt(node, step, rv.recIdx)?.payload ?? null)" class="lal__body">
                     {{ bodyPreview(cellAt(node, step, rv.recIdx)?.payload ?? null) }}
                   </div>
@@ -899,18 +958,26 @@ void TAG_STATUS_TONE;
                     </div>
                   </div>
                   <div
-                    v-if="logBuilderOutput(cellAt(node, step, rv.recIdx)?.payload ?? null)?.tags?.length"
-                    class="lal__tags"
+                    v-if="carriedTags(cellAt(node, step, rv.recIdx)?.payload ?? null).length > 0"
+                    class="lal__taggroup"
                   >
+                    <span class="lal__tagheader">carried</span>
                     <span
-                      v-for="(t, ti) in logBuilderOutput(cellAt(node, step, rv.recIdx)?.payload ?? null)?.tags ?? []"
-                      :key="ti"
+                      v-for="(t, ti) in carriedTags(cellAt(node, step, rv.recIdx)?.payload ?? null)"
+                      :key="`o-${ti}`"
+                      class="lal__tag lal__tag--orig"
+                    >{{ t.key }}={{ t.value }}</span>
+                  </div>
+                  <div
+                    v-if="addedTags(cellAt(node, step, rv.recIdx)?.payload ?? null).length > 0"
+                    class="lal__taggroup"
+                  >
+                    <span class="lal__tagheader">+ added</span>
+                    <span
+                      v-for="(t, ti) in addedTags(cellAt(node, step, rv.recIdx)?.payload ?? null)"
+                      :key="`a-${ti}`"
                       class="lal__tag"
-                      :class="{
-                        'lal__tag--orig': t.status === 'original',
-                        'lal__tag--add': t.status === 'lal-added',
-                        'lal__tag--over': t.status === 'lal-override',
-                      }"
+                      :class="t.status === 'lal-override' ? 'lal__tag--over' : 'lal__tag--add'"
                     >{{ t.key }}={{ t.value }}</span>
                   </div>
                   <div v-if="contentPreview(cellAt(node, step, rv.recIdx)?.payload ?? null)" class="lal__body">
@@ -1327,6 +1394,23 @@ void TAG_STATUS_TONE;
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
+}
+
+.lal__taggroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.lal__tagheader {
+  font-family: var(--rr-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+  margin-right: 4px;
+  flex-shrink: 0;
 }
 
 .lal__tag {
