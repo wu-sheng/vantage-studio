@@ -228,24 +228,54 @@ function clearHistorical(): void {
   selectedCell.value = null;
 }
 
+function persistCapture(): void {
+  if (historicalEntry.value !== null) return;
+  const id = dbg.sessionId.value;
+  if (!id || !selectedFile.value || !selectedRule.value) return;
+  const sess: SessionResponse = dbg.session.value ?? {
+    sessionId: id,
+    capturedAt: Date.now(),
+    nodes: [],
+  };
+  history.save({
+    widget: 'lal',
+    catalog: 'lal',
+    name: selectedFile.value,
+    ruleName: selectedRule.value,
+    granularity: granularity.value,
+    recordCap: recordCap.value,
+    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionDeadline: dbg.retentionDeadline.value ?? undefined,
+    recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
+    nodeCount: sess.nodes.length,
+    session: sess,
+  });
+}
+
 watch(
-  () => dbg.session.value,
-  (sess) => {
-    if (historicalEntry.value !== null) return;
-    if (!sess || !selectedFile.value || !selectedRule.value) return;
-    history.save({
-      widget: 'lal',
-      catalog: 'lal',
-      name: selectedFile.value,
-      ruleName: selectedRule.value,
-      granularity: granularity.value,
-      recordCap: recordCap.value,
-      retentionMillis: retentionMinutes.value * 60 * 1000,
-      recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
-      nodeCount: sess.nodes.length,
-      session: sess,
-    });
+  () => [dbg.sessionId.value, dbg.session.value, dbg.retentionDeadline.value] as const,
+  () => persistCapture(),
+);
+
+watch(
+  () => route.query.resumeSessionId,
+  (id) => {
+    if (typeof id !== 'string' || id === '') return;
+    if (dbg.sessionId.value === id) return;
+    const entry = history.entries.value.find((e) => e.session.sessionId === id);
+    if (!entry) return;
+    selectedFile.value = entry.name;
+    selectedRule.value = entry.ruleName;
+    if (entry.granularity === 'block' || entry.granularity === 'statement') {
+      granularity.value = entry.granularity;
+    }
+    if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
+    if (entry.retentionMillis !== undefined) {
+      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+    }
+    dbg.resume(id, entry.retentionDeadline ?? null);
   },
+  { immediate: true },
 );
 
 watch(

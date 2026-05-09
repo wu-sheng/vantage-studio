@@ -37,7 +37,10 @@ export type DebugWidget = 'mal' | 'lal' | 'oal';
 export interface HistoryEntry {
   /** Stable id; survives serialization. */
   id: string;
-  /** Unix-ms when the capture was archived (not when it ran). */
+  /** Unix-ms when the capture was archived. With upsert-by-sessionId
+   *  this stays pinned to the FIRST save (i.e. session start time)
+   *  even as later polls update the session payload — so sorting by
+   *  this value gives natural newest-first ordering by start time. */
   savedAt: number;
   widget: DebugWidget;
   catalog: string;
@@ -46,11 +49,21 @@ export interface HistoryEntry {
   granularity?: string;
   recordCap?: number;
   retentionMillis?: number;
+  /** Unix-ms when OAP will reap the live session. When `Date.now() <
+   *  retentionDeadline`, the capture is still active and a new tab
+   *  can resume polling against it via `useDebugSession.resume()`. */
+  retentionDeadline?: number;
   /** Counts surfaced in the dropdown without re-walking the session. */
   recordCount: number;
   nodeCount: number;
   /** Frozen SessionResponse at the moment of save. */
   session: SessionResponse;
+}
+
+/** True when this entry's live session hasn't yet been reaped by OAP
+ *  (deadline in the future). Active entries are eligible for resume. */
+export function isActive(entry: HistoryEntry, nowMs: number = Date.now()): boolean {
+  return entry.retentionDeadline !== undefined && entry.retentionDeadline > nowMs;
 }
 
 const STORAGE_KEY = 'vs:debug-history:v1';
@@ -125,7 +138,16 @@ export function useDebugHistory(widget: DebugWidget): DebugHistoryHandle {
     );
     if (idx >= 0) {
       const existing = store.value[idx]!;
-      if (existing.recordCount === input.recordCount && existing.nodeCount === input.nodeCount) {
+      // Skip the localStorage write when nothing meaningful moved;
+      // BUT honour a `retentionDeadline` newly-arrived from a start
+      // response (the very first save right after dbg.start may not
+      // have it yet because the watch fires before start() completes
+      // — once start() resolves and the next watch tick brings the
+      // deadline, we want to record it).
+      const sameCounts =
+        existing.recordCount === input.recordCount && existing.nodeCount === input.nodeCount;
+      const sameDeadline = existing.retentionDeadline === input.retentionDeadline;
+      if (sameCounts && sameDeadline) {
         return existing;
       }
       const updated: HistoryEntry = {

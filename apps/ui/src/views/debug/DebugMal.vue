@@ -299,31 +299,66 @@ watch(
   { immediate: true },
 );
 
-/** Auto-save during capture. The composable replaces `session` on
- *  every poll (1×/s while capturing); we mirror it into history with
- *  upsert-by-sessionId so the operator can browse a still-running
- *  capture from the history page without waiting for stop. The
- *  composable skips localStorage writes when nothing meaningful
- *  changed, so this is cheap. Skipped while replaying history. */
+/** Auto-save during capture. We watch both `sessionId` (set the
+ *  moment dbg.start resolves) and `session` (replaced on each poll)
+ *  so the entry shows up in history immediately — even before any
+ *  poll has returned data. Subsequent polls upsert the same entry by
+ *  sessionId; localStorage writes are skipped when nothing changed.
+ *  Skipped entirely while replaying history. */
+function persistCapture(): void {
+  if (historicalEntry.value !== null) return;
+  const id = dbg.sessionId.value;
+  if (!id) return;
+  const rule = selectedRule.value;
+  if (!rule || !selectedMetric.value) return;
+  // Synthesize a placeholder session when polls haven't yet returned
+  // — keeps the history entry findable from the moment OAP allocates
+  // the session id.
+  const sess: SessionResponse = dbg.session.value ?? {
+    sessionId: id,
+    capturedAt: Date.now(),
+    nodes: [],
+  };
+  history.save({
+    widget: 'mal',
+    catalog: rule.catalog,
+    name: rule.name,
+    ruleName: selectedMetric.value,
+    recordCap: recordCap.value,
+    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionDeadline: dbg.retentionDeadline.value ?? undefined,
+    recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
+    nodeCount: sess.nodes.length,
+    session: sess,
+  });
+}
+
 watch(
-  () => dbg.session.value,
-  (sess) => {
-    if (historicalEntry.value !== null) return;
-    if (!sess) return;
-    const rule = selectedRule.value;
-    if (!rule || !selectedMetric.value) return;
-    history.save({
-      widget: 'mal',
-      catalog: rule.catalog,
-      name: rule.name,
-      ruleName: selectedMetric.value,
-      recordCap: recordCap.value,
-      retentionMillis: retentionMinutes.value * 60 * 1000,
-      recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
-      nodeCount: sess.nodes.length,
-      session: sess,
-    });
+  () => [dbg.sessionId.value, dbg.session.value, dbg.retentionDeadline.value] as const,
+  () => persistCapture(),
+);
+
+/** Resume an active session in this tab — `?resumeSessionId=<id>`
+ *  attaches polling to an already-allocated OAP session (typical
+ *  flow: operator clicked an "active" entry on /debug/history). The
+ *  matching history entry supplies the rule selection + retention
+ *  deadline so the controls + countdown reflect reality. */
+watch(
+  () => route.query.resumeSessionId,
+  (id) => {
+    if (typeof id !== 'string' || id === '') return;
+    if (dbg.sessionId.value === id) return;
+    const entry = history.entries.value.find((e) => e.session.sessionId === id);
+    if (!entry) return;
+    selectedKey.value = `${entry.catalog}/${entry.name}`;
+    selectedMetric.value = entry.ruleName;
+    if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
+    if (entry.retentionMillis !== undefined) {
+      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+    }
+    dbg.resume(id, entry.retentionDeadline ?? null);
   },
+  { immediate: true },
 );
 
 const nodeViews = computed<MalNodeView[]>(() => {

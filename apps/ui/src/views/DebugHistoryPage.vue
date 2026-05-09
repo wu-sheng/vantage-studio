@@ -19,9 +19,10 @@
  * That keeps the storage logic centralised here while the rendering
  * stays in the DSL views that already understand each shape.
  */
-import { computed, ref } from 'vue';
+import { computed, onScopeDispose, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import {
+  isActive,
   useDebugHistory,
   type DebugWidget,
   type HistoryEntry,
@@ -40,6 +41,31 @@ const filteredEntries = computed<HistoryEntry[]>(() => {
   const all = history.all.value;
   return filter.value === 'all' ? all : all.filter((e) => e.widget === filter.value);
 });
+
+/** Tick once per second so countdowns / active-vs-completed flips
+ *  re-render. Cheap — Vue only diffs the changed text nodes. */
+const nowMs = ref<number>(Date.now());
+const tick = setInterval(() => {
+  nowMs.value = Date.now();
+}, 1000);
+onScopeDispose(() => clearInterval(tick));
+
+const activeEntries = computed<HistoryEntry[]>(() =>
+  filteredEntries.value.filter((e) => isActive(e, nowMs.value)),
+);
+const completedEntries = computed<HistoryEntry[]>(() =>
+  filteredEntries.value.filter((e) => !isActive(e, nowMs.value)),
+);
+
+function countdown(deadline: number | undefined): string {
+  if (deadline === undefined) return '';
+  const remaining = Math.max(0, deadline - nowMs.value);
+  if (remaining === 0) return 'expired';
+  const totalSec = Math.floor(remaining / 1000);
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return `${mm}:${String(ss).padStart(2, '0')}`;
+}
 
 const counts = computed(() => {
   const c: Record<WidgetFilter, number> = { all: 0, mal: 0, lal: 0, oal: 0 };
@@ -62,11 +88,22 @@ function formatDateTime(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/** Active entries route through `?resumeSessionId=` so the per-DSL
+ *  view attaches polling to the live OAP session (you keep getting
+ *  updates as records arrive). Completed entries route through
+ *  `?historyId=` for read-only replay of the captured snapshot. */
 function loadEntry(entry: HistoryEntry): void {
-  void router.push({
-    path: `/debug/${entry.widget}`,
-    query: { historyId: entry.id },
-  });
+  if (isActive(entry, nowMs.value)) {
+    void router.push({
+      path: `/debug/${entry.widget}`,
+      query: { resumeSessionId: entry.session.sessionId },
+    });
+  } else {
+    void router.push({
+      path: `/debug/${entry.widget}`,
+      query: { historyId: entry.id },
+    });
+  }
 }
 
 function deleteEntry(id: string): void {
@@ -124,37 +161,89 @@ function clearAll(): void {
       </template>
     </div>
 
-    <ul v-else class="dh__list">
-      <li v-for="entry in filteredEntries" :key="entry.id" class="dh__item">
-        <div class="dh__col dh__col--meta">
-          <Pill :tone="widgetTone[entry.widget]">{{ entry.widget }}</Pill>
-          <span class="dh__time">{{ formatDateTime(entry.savedAt) }}</span>
-        </div>
-        <div class="dh__col dh__col--rule">
-          <div class="dh__rulekey">
-            <code class="dh__cat">{{ entry.catalog }}</code>
-            <span class="dh__sep">·</span>
-            <code class="dh__name">{{ entry.name }}</code>
-            <span class="dh__sep">·</span>
-            <code class="dh__metric">{{ entry.ruleName }}</code>
-          </div>
-          <div class="dh__counts">
-            {{ entry.recordCount }} records · {{ entry.nodeCount }} nodes
-            <template v-if="entry.granularity">· {{ entry.granularity }}</template>
-            <template v-if="entry.recordCap">· cap {{ entry.recordCap }}</template>
-          </div>
-        </div>
-        <div class="dh__col dh__col--actions">
-          <button type="button" class="dh__load" @click="loadEntry(entry)">load →</button>
-          <button
-            type="button"
-            class="dh__del"
-            :title="`delete this entry`"
-            @click="deleteEntry(entry.id)"
-          >×</button>
-        </div>
-      </li>
-    </ul>
+    <template v-else>
+      <section v-if="activeEntries.length > 0" class="dh__section">
+        <header class="dh__sectionh">
+          <span class="dh__sectiontitle">active</span>
+          <span class="dh__sectionct">{{ activeEntries.length }} ongoing</span>
+        </header>
+        <ul class="dh__list">
+          <li
+            v-for="entry in activeEntries"
+            :key="entry.id"
+            class="dh__item dh__item--active"
+          >
+            <div class="dh__col dh__col--meta">
+              <Pill :tone="widgetTone[entry.widget]">{{ entry.widget }}</Pill>
+              <span class="dh__active">live</span>
+              <span class="dh__time">{{ formatDateTime(entry.savedAt) }}</span>
+            </div>
+            <div class="dh__col dh__col--rule">
+              <div class="dh__rulekey">
+                <code class="dh__cat">{{ entry.catalog }}</code>
+                <span class="dh__sep">·</span>
+                <code class="dh__name">{{ entry.name }}</code>
+                <span class="dh__sep">·</span>
+                <code class="dh__metric">{{ entry.ruleName }}</code>
+              </div>
+              <div class="dh__counts">
+                {{ entry.recordCount }} records · {{ entry.nodeCount }} nodes
+                <template v-if="entry.granularity">· {{ entry.granularity }}</template>
+                <template v-if="entry.recordCap">· cap {{ entry.recordCap }}</template>
+                · ends in <span class="dh__countdown">{{ countdown(entry.retentionDeadline) }}</span>
+              </div>
+            </div>
+            <div class="dh__col dh__col--actions">
+              <button type="button" class="dh__load dh__load--resume" @click="loadEntry(entry)">resume →</button>
+              <button
+                type="button"
+                class="dh__del"
+                title="delete this entry (does not stop the OAP session)"
+                @click="deleteEntry(entry.id)"
+              >×</button>
+            </div>
+          </li>
+        </ul>
+      </section>
+
+      <section v-if="completedEntries.length > 0" class="dh__section">
+        <header v-if="activeEntries.length > 0" class="dh__sectionh">
+          <span class="dh__sectiontitle">completed</span>
+          <span class="dh__sectionct">{{ completedEntries.length }} finished</span>
+        </header>
+        <ul class="dh__list">
+          <li v-for="entry in completedEntries" :key="entry.id" class="dh__item">
+            <div class="dh__col dh__col--meta">
+              <Pill :tone="widgetTone[entry.widget]">{{ entry.widget }}</Pill>
+              <span class="dh__time">{{ formatDateTime(entry.savedAt) }}</span>
+            </div>
+            <div class="dh__col dh__col--rule">
+              <div class="dh__rulekey">
+                <code class="dh__cat">{{ entry.catalog }}</code>
+                <span class="dh__sep">·</span>
+                <code class="dh__name">{{ entry.name }}</code>
+                <span class="dh__sep">·</span>
+                <code class="dh__metric">{{ entry.ruleName }}</code>
+              </div>
+              <div class="dh__counts">
+                {{ entry.recordCount }} records · {{ entry.nodeCount }} nodes
+                <template v-if="entry.granularity">· {{ entry.granularity }}</template>
+                <template v-if="entry.recordCap">· cap {{ entry.recordCap }}</template>
+              </div>
+            </div>
+            <div class="dh__col dh__col--actions">
+              <button type="button" class="dh__load" @click="loadEntry(entry)">load →</button>
+              <button
+                type="button"
+                class="dh__del"
+                title="delete this entry"
+                @click="deleteEntry(entry.id)"
+              >×</button>
+            </div>
+          </li>
+        </ul>
+      </section>
+    </template>
   </div>
 </template>
 
@@ -262,6 +351,31 @@ function clearAll(): void {
   color: var(--rr-accent, var(--rr-active));
 }
 
+.dh__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dh__sectionh {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+}
+
+.dh__sectiontitle {
+  color: var(--rr-heading);
+}
+
+.dh__sectionct {
+  font-size: 10.5px;
+}
+
 .dh__list {
   list-style: none;
   margin: 0;
@@ -269,6 +383,31 @@ function clearAll(): void {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--rr-border);
+}
+
+.dh__item--active {
+  border-left: 3px solid var(--rr-accent, var(--rr-active));
+}
+
+.dh__active {
+  font-family: var(--rr-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  background: rgba(78, 201, 176, 0.12);
+  color: var(--rr-ok, #4ec9b0);
+  border: 1px solid var(--rr-ok, #4ec9b0);
+}
+
+.dh__countdown {
+  color: var(--rr-accent, var(--rr-active));
+  font-weight: 600;
+}
+
+.dh__load--resume {
+  border-color: var(--rr-ok, #4ec9b0);
+  color: var(--rr-ok, #4ec9b0);
 }
 
 .dh__item {

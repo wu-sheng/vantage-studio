@@ -68,8 +68,16 @@ export interface UseDebugSessionResult {
   /** Convenience flat list of every prior session id that was
    *  terminated by the cleanup, derived from `priorCleanup`. */
   replacedPriorIds: Ref<string[]>;
+  /** Unix-ms when OAP will reap the live session. Null between
+   *  captures or when an entry was resumed without a known deadline. */
+  retentionDeadline: Ref<number | null>;
   /** Allocate a new session. Discards any prior local state. */
   start(args: Omit<StartSessionArgs, 'clientId'>): Promise<void>;
+  /** Attach to an already-allocated session id (typically because the
+   *  operator returned to a tab after navigating away — the session
+   *  is still live on OAP, we just need to resume polling). Skips the
+   *  start API call entirely. */
+  resume(id: string, retentionDeadline?: number | null): void;
   /** Stop the current session. No-op when idle. */
   stop(): Promise<void>;
 }
@@ -110,6 +118,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
   const peerAcks = ref<PeerInstallAck[]>([]);
   const installed = ref<InstallSummary | null>(null);
   const priorCleanup = ref<PriorCleanup | null>(null);
+  const retentionDeadline = ref<number | null>(null);
 
   const replacedPriorIds = computed<string[]>(() => {
     const c = priorCleanup.value;
@@ -203,6 +212,7 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
       peerAcks.value = r.peers ?? [];
       installed.value = r.installed ?? null;
       priorCleanup.value = r.priorCleanup ?? null;
+      retentionDeadline.value = r.retentionDeadline ?? null;
       state.value = 'capturing';
       // First poll immediately so the operator sees something fast.
       void poll(pollGeneration);
@@ -210,6 +220,28 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
       error.value = describeApiError(err);
       state.value = 'error';
     }
+  }
+
+  /** Attach to an existing live session without re-allocating one on
+   *  OAP. Used when reopening a tab that was previously running a
+   *  capture — the session id was persisted in the history store with
+   *  its retention deadline, and we just need to resume polling. The
+   *  first poll fires immediately so the operator sees the latest
+   *  records without waiting a full tick. */
+  function resume(id: string, deadline: number | null = null): void {
+    pollGeneration += 1;
+    clearTimer();
+    pollFailures = 0;
+    pausedForHidden = false;
+    state.value = 'capturing';
+    error.value = null;
+    session.value = null;
+    sessionId.value = id;
+    peerAcks.value = [];
+    installed.value = null;
+    priorCleanup.value = null;
+    retentionDeadline.value = deadline;
+    void poll(pollGeneration);
   }
 
   async function stop(): Promise<void> {
@@ -272,7 +304,9 @@ export function useDebugSession(widget: DebugWidgetKey): UseDebugSessionResult {
     installed,
     priorCleanup,
     replacedPriorIds,
+    retentionDeadline,
     start,
+    resume,
     stop,
   };
 }
