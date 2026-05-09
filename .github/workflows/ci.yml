@@ -42,7 +42,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm license-headers
+      # License-header check uses Apache's skywalking-eyes (the same
+      # tool the SkyWalking project uses upstream). Config lives at
+      # `.licenserc.yaml`. Run with `header check`; for autofix
+      # locally use `header fix` against the same config.
+      - uses: apache/skywalking-eyes/header@v0.7.0
+        with:
+          config: .licenserc.yaml
 
       - run: pnpm format:check
 

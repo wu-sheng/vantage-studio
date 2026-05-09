@@ -17,7 +17,8 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "build": "pnpm -r --if-present build",
-    "license-headers": "node scripts/check-license-headers.mjs"
+    "license-headers": "docker run --rm -v $PWD:/github/workspace ghcr.io/apache/skywalking-eyes:0.7.0 -c /github/workspace/.licenserc.yaml header check",
+    "license-headers:fix": "docker run --rm -v $PWD:/github/workspace ghcr.io/apache/skywalking-eyes:0.7.0 -c /github/workspace/.licenserc.yaml header fix"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
