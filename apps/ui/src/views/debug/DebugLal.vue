@@ -30,21 +30,20 @@ import type {
   BundledEntry,
   Granularity,
   LalLogBuilderOutput,
+  LalLogDataInput,
   LalSamplePayload,
   ListEnvelope,
   NodeSlice,
+  SampleType,
   SessionRecord,
   SessionSample,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
-import { useRuleSource } from '../../composables/useRuleSource.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
-import DebugSourcePane from './DebugSourcePane.vue';
-import { isLalSamplePayload, sampleTone } from './payload.js';
-import { findLineMatches } from './sourceMatch.js';
+import { isLalSamplePayload } from './payload.js';
 
 const route = useRoute();
 const dbg = useDebugSession('lal');
@@ -163,31 +162,79 @@ async function startSampling(): Promise<void> {
   });
 }
 
-interface LalSampleRow {
+interface LalCell {
   rec: SessionRecord;
+  recIdx: number;
   sample: SessionSample;
   payload: LalSamplePayload | null;
 }
 
+/** A row in the per-record × per-block grid. `key` uniquely identifies
+ *  the row across statement-mode (where multiple `function` samples
+ *  fire per record at distinct DSL lines). */
+interface LalStep {
+  key: string;
+  type: SampleType;
+  /** 1-based DSL line in statement mode; 0 for block-level samples. */
+  sourceLine: number;
+  /** Display label — sample type for input/output, or `function@LINE`
+   *  for statement-mode functions. */
+  label: string;
+}
+
+interface LalRecordView {
+  rec: SessionRecord;
+  recIdx: number;
+}
+
 interface LalNodeView extends NodeSlice {
-  rows: LalSampleRow[];
+  records: SessionRecord[];
+  recordViews: LalRecordView[];
+  steps: LalStep[];
+  /** stepKey → recIdx → cell. Lookup with `cellAt(view, step, recIdx)`. */
+  cells: Map<string, Map<number, LalCell>>;
+}
+
+function stepKeyOf(s: SessionSample): string {
+  return `${s.type}@${s.sourceLine ?? 0}`;
 }
 
 const nodeViews = computed<LalNodeView[]>(() => {
   const s = dbg.session.value;
   if (!s) return [];
   return s.nodes.map((n) => {
-    const rows: LalSampleRow[] = [];
-    for (const rec of n.records ?? []) {
+    const records = n.records ?? [];
+    const recordViews: LalRecordView[] = records.map((rec, recIdx) => ({ rec, recIdx }));
+    const steps: LalStep[] = [];
+    const seen = new Set<string>();
+    const cells = new Map<string, Map<number, LalCell>>();
+    for (let recIdx = 0; recIdx < records.length; recIdx++) {
+      const rec = records[recIdx]!;
       for (const sample of rec.samples ?? []) {
-        rows.push({
+        const key = stepKeyOf(sample);
+        if (!seen.has(key)) {
+          seen.add(key);
+          const sourceLine = sample.sourceLine ?? 0;
+          const label =
+            sample.type === 'function' && sourceLine > 0
+              ? `function @${sourceLine}`
+              : sample.type;
+          steps.push({ key, type: sample.type, sourceLine, label });
+        }
+        let perRec = cells.get(key);
+        if (!perRec) {
+          perRec = new Map();
+          cells.set(key, perRec);
+        }
+        perRec.set(recIdx, {
           rec,
+          recIdx,
           sample,
           payload: isLalSamplePayload(sample.payload) ? sample.payload : null,
         });
       }
     }
-    return { ...n, rows };
+    return { ...n, records, recordViews, steps, cells };
   });
 });
 
@@ -195,85 +242,142 @@ function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
 }
 
-/** Pull the `LogBuilder` output if the LAL payload has it — used for
- *  the `tags` summary cell. Returns null on `Message`-typed builders
- *  or when no output is bound yet. */
+function cellAt(view: LalNodeView, step: LalStep, recIdx: number): LalCell | undefined {
+  return view.cells.get(step.key)?.get(recIdx);
+}
+
 function logBuilderOutput(p: LalSamplePayload | null): LalLogBuilderOutput | null {
   if (!p?.output) return null;
   if (p.output.type !== 'LogBuilder') return null;
   return p.output as LalLogBuilderOutput;
 }
 
-function tagCount(p: LalSamplePayload | null, status: 'original' | 'lal-added' | 'lal-override'): number {
-  const lb = logBuilderOutput(p);
-  if (!lb?.tags) return 0;
-  return lb.tags.filter((t) => t.status === status).length;
+function logDataInput(p: LalSamplePayload | null): LalLogDataInput | null {
+  if (!p?.input) return null;
+  if (p.input.type !== 'LogData') return null;
+  return p.input as LalLogDataInput;
 }
 
-/** First-line preview of the LAL log content (truncated). */
+interface KvEntry {
+  k: string;
+  v: string;
+  hl?: boolean;
+}
+
+const TAG_STATUS_TONE: Record<NonNullable<import('@vantage-studio/api-client').LalLogBuilderTag['status']>, string> = {
+  original: 'rr-tag--orig',
+  'lal-added': 'rr-tag--add',
+  'lal-override': 'rr-tag--over',
+};
+
+function inputEntries(p: LalSamplePayload | null): KvEntry[] {
+  const inp = logDataInput(p);
+  if (!inp) return [];
+  return [
+    { k: 'service', v: inp.service ?? '—' },
+    { k: 'endpoint', v: inp.endpoint ?? '—' },
+    { k: 'instance', v: inp.serviceInstance ?? '—' },
+    { k: 'layer', v: inp.layer ?? '—' },
+  ];
+}
+
+function outputEntries(p: LalSamplePayload | null): KvEntry[] {
+  const out = logBuilderOutput(p);
+  if (!out) return [];
+  return [
+    { k: 'service', v: out.service ?? '—' },
+    { k: 'endpoint', v: out.endpoint ?? '—' },
+    { k: 'timestamp', v: out.timestamp ? String(out.timestamp) : '—' },
+  ];
+}
+
+function bodyPreview(p: LalSamplePayload | null): string {
+  const inp = logDataInput(p);
+  const text = inp?.body?.text;
+  if (!text) return '';
+  const t = text.trim();
+  return t.length > 80 ? `${t.slice(0, 80)}…` : t;
+}
+
 function contentPreview(p: LalSamplePayload | null): string {
   const lb = logBuilderOutput(p);
-  const c = lb?.content;
-  if (!c) return '';
-  const trimmed = c.trim();
-  return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed;
+  if (!lb?.content) return '';
+  const t = lb.content.trim();
+  return t.length > 80 ? `${t.slice(0, 80)}…` : t;
 }
 
-// ── Source pane plumbing ────────────────────────────────────────────
+// ── Selection + source pane ───────────────────────────────────────
 
-const hoveredRow = ref<LalSampleRow | null>(null);
+/** Single selected cell drives the source-pane open-state and the
+ *  `<mark>` highlight inside the captured DSL. */
+const selectedCell = ref<LalCell | null>(null);
 
-/** The source pane shows the LAL **file** body (which contains all
- *  inner rules), not just the selected inner rule. The OAP debug
- *  install passes `name=<file>` and `ruleName=<inner>`; the file is
- *  what's served by `/runtime/rule?catalog=lal&name=<file>`. */
-const sourceCatalog = computed<'lal' | null>(() =>
-  dbg.session.value === null || !selectedFile.value ? null : 'lal',
-);
-const sourceName = computed<string | null>(() =>
-  dbg.session.value === null ? null : selectedFile.value || null,
-);
-const { source: ruleSource, query: sourceQuery } = useRuleSource({
-  catalog: sourceCatalog,
-  name: sourceName,
-});
+function selectCell(cell: LalCell): void {
+  selectedCell.value = selectedCell.value === cell ? null : cell;
+}
 
-const pageDsl = computed<string | null>(() => {
+const sourceDsl = computed<string | null>(() => {
+  const sel = selectedCell.value;
+  if (sel) return sel.rec.dsl ?? null;
   const s = dbg.session.value;
   if (!s) return null;
   for (let i = s.nodes.length - 1; i >= 0; i--) {
     const recs = s.nodes[i]!.records;
-    if (recs && recs.length > 0) {
-      return recs[recs.length - 1]!.dsl || null;
-    }
+    if (recs && recs.length > 0) return recs[recs.length - 1]!.dsl ?? null;
   }
   return null;
 });
 
-/** LAL highlights. Sample `sourceText` is empty for the input probe
- *  (no DSL fragment) — fall back to the per-sample `sourceLine` (only
- *  set in statement-mode) by computing it inside the rule body. The
- *  source pane lights nothing on input rows in block mode. */
-const highlightedLines = computed<readonly number[]>(() => {
-  const row = hoveredRow.value;
-  const src = ruleSource.value;
-  if (!row || !src) return [];
-  if (row.sample.sourceText && row.sample.sourceText.length > 0) {
-    return findLineMatches(src.content, row.sample.sourceText);
-  }
-  if (row.sample.sourceLine !== undefined && row.sample.sourceLine > 0) {
-    return [row.sample.sourceLine];
-  }
-  return [];
+const sourceLabel = computed<string>(() => {
+  const sel = selectedCell.value;
+  if (!sel) return 'most recent record';
+  return `record ${sel.recIdx + 1} · ${sel.sample.type}${sel.sample.sourceLine ? ` @${sel.sample.sourceLine}` : ''}`;
 });
 
-function refetchSource(): void {
-  void sourceQuery.refetch();
+interface SourceSegment {
+  text: string;
+  highlight: boolean;
 }
+
+const sourceSegments = computed<SourceSegment[]>(() => {
+  const dsl = sourceDsl.value;
+  if (!dsl) return [];
+  const fragment = selectedCell.value?.sample.sourceText.trim() ?? '';
+  if (fragment === '') return [{ text: dsl, highlight: false }];
+  const segments: SourceSegment[] = [];
+  let cursor = 0;
+  while (cursor < dsl.length) {
+    const at = dsl.indexOf(fragment, cursor);
+    if (at < 0) {
+      segments.push({ text: dsl.slice(cursor), highlight: false });
+      break;
+    }
+    if (at > cursor) segments.push({ text: dsl.slice(cursor, at), highlight: false });
+    segments.push({ text: fragment, highlight: true });
+    cursor = at + fragment.length;
+  }
+  return segments;
+});
+
+function formatTime(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms3 = String(d.getMilliseconds()).padStart(3, '0');
+  return `${hh}:${mm}:${ss}.${ms3}`;
+}
+
+function recordTitle(view: LalRecordView): string {
+  return `record ${view.recIdx + 1} · ${formatTime(view.rec.startedAtMs)}`;
+}
+
+void TAG_STATUS_TONE;
+
 </script>
 
 <template>
-  <DebugView :dbg="dbg" :node-views="nodeViews">
+  <DebugView :dbg="dbg" :node-views="nodeViews" :source-open="selectedCell !== null">
     <template #controls>
       <div class="ctl">
         <label class="ctl__lbl">rule file</label>
@@ -337,85 +441,130 @@ function refetchSource(): void {
     </template>
 
     <template #idle-hint>
-      pick a LAL rule, set the file (typically <code>{ruleName}.yaml</code>),
-      hit start. each captured log produces a sequence of samples — input
-      (raw LogData), function (after bindInput; LogBuilder snapshot),
-      output (terminal). statement granularity adds per-statement samples
-      with a 1-based <code>sourceLine</code>. hover a row to highlight the
-      matching DSL line in the source pane.
+      pick a LAL rule and hit start. each captured log becomes one
+      column in the matrix; rows walk the per-record blocks
+      <code>input → function → output</code> (statement granularity
+      splits <code>function</code> per DSL line). click any cell to
+      open the source pane with that record's captured DSL and the
+      matching fragment highlighted.
     </template>
 
     <template #source-pane>
-      <DebugSourcePane
-        :source="ruleSource"
-        :loading="sourceQuery.isPending.value"
-        :error="sourceQuery.error.value === null ? null : String(sourceQuery.error.value)"
-        :highlighted-lines="highlightedLines"
-        :page-dsl="pageDsl"
-        lang="lal"
-        @refetch="refetchSource"
-      />
+      <div class="lal__src">
+        <header class="lal__srch">{{ sourceLabel }}</header>
+        <pre
+          v-if="sourceDsl"
+          class="lal__srcbody"
+        ><code><template
+          v-for="(seg, i) in sourceSegments"
+          :key="i"
+        ><mark
+          v-if="seg.highlight"
+          class="lal__hl"
+        >{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></code></pre>
+        <p v-else class="lal__srcempty">no captured DSL yet.</p>
+      </div>
     </template>
 
     <template #node-body="{ node }">
-      <div v-if="node.rows.length === 0" class="lal__empty">
-        no LAL samples from this node
+      <div v-if="node.recordViews.length === 0" class="lal__empty">
+        no LAL records from this node
       </div>
-      <table v-else class="lal__waterfall">
-        <thead>
-          <tr>
-            <th class="lal__line">ln</th>
-            <th class="lal__source">source</th>
-            <th class="lal__kind">type</th>
-            <th class="lal__cont">cont</th>
-            <th class="lal__result">summary</th>
-            <th class="lal__tags">tags (orig / added / over)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="(row, idx) in node.rows"
-            :key="`${nodeKey(node)}-${idx}`"
-            class="lal__row"
-            :class="{ 'lal__row--hovered': hoveredRow === row }"
-            @mouseenter="hoveredRow = row"
-            @mouseleave="hoveredRow = null"
+      <div v-else class="lal__matrixwrap">
+        <div
+          class="lal__matrix"
+          :style="`grid-template-columns: 180px repeat(${node.recordViews.length}, minmax(200px, 1fr));`"
+        >
+          <!-- header row: blank label cell + record headers -->
+          <div class="lal__hdrlbl">block ▾ / record →</div>
+          <div
+            v-for="rv in node.recordViews"
+            :key="`${nodeKey(node)}-h-${rv.recIdx}`"
+            class="lal__hdrec"
+            :class="{
+              'lal__hdrec--pinned':
+                selectedCell !== null && selectedCell.recIdx === rv.recIdx,
+            }"
           >
-            <td class="lal__line">{{ row.sample.sourceLine ?? '—' }}</td>
-            <td class="lal__source"><code>{{ row.sample.sourceText || '—' }}</code></td>
-            <td class="lal__kind">
-              <Pill :tone="sampleTone(row.sample.type)">{{ row.sample.type }}</Pill>
-            </td>
-            <td class="lal__cont">
-              <Pill :tone="row.sample.continueOn ? 'ok' : 'warn'">
-                {{ row.sample.continueOn ? 'cont' : 'stop' }}
-              </Pill>
-            </td>
-            <td class="lal__result">
-              <template v-if="row.payload">
-                <div class="lal__flags">
-                  <span v-if="row.payload.aborted" class="lal__flag lal__flag--warn">aborted</span>
-                  <span v-if="row.payload.hasParsed" class="lal__flag lal__flag--ok">parsed</span>
-                  <span
-                    v-if="row.payload.parsedKeys && row.payload.parsedKeys.length > 0"
-                    class="lal__flag"
-                  >parsed[{{ row.payload.parsedKeys.length }}]</span>
-                </div>
-                <div v-if="contentPreview(row.payload)" class="lal__preview">
-                  <code>{{ contentPreview(row.payload) }}</code>
-                </div>
+            <div class="lal__hdrtitle">{{ recordTitle(rv) }}</div>
+          </div>
+
+          <!-- step rows -->
+          <template v-for="step in node.steps" :key="step.key">
+            <div class="lal__steplbl">
+              <div class="lal__stepkind">{{ step.label }}</div>
+              <div class="lal__stepct">
+                {{
+                  Object.keys(Object.fromEntries([...node.cells.get(step.key)?.entries() ?? []])).length
+                }}
+                / {{ node.recordViews.length }} records
+              </div>
+            </div>
+            <div
+              v-for="rv in node.recordViews"
+              :key="`${step.key}-${rv.recIdx}`"
+              class="lal__cell"
+              :class="{
+                'lal__cell--selected':
+                  selectedCell !== null &&
+                  selectedCell.recIdx === rv.recIdx &&
+                  selectedCell.sample === cellAt(node, step, rv.recIdx)?.sample,
+                'lal__cell--pinned':
+                  selectedCell !== null && selectedCell.recIdx === rv.recIdx,
+                'lal__cell--missing': cellAt(node, step, rv.recIdx) === undefined,
+              }"
+              @click="(() => { const c = cellAt(node, step, rv.recIdx); if (c) selectCell(c); })()"
+            >
+              <template v-if="cellAt(node, step, rv.recIdx) === undefined">
+                <span class="lal__cellabsent">—</span>
               </template>
-            </td>
-            <td class="lal__tags">
-              <span class="lal__tagcount">{{ tagCount(row.payload, 'original') }}</span>
-              <span class="lal__tagsep">/</span>
-              <span class="lal__tagcount">{{ tagCount(row.payload, 'lal-added') }}</span>
-              <span class="lal__tagsep">/</span>
-              <span class="lal__tagcount">{{ tagCount(row.payload, 'lal-override') }}</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              <template v-else>
+                <!-- input: LogData -->
+                <template v-if="step.type === 'input'">
+                  <div class="lal__kvs">
+                    <div v-for="kv in inputEntries(cellAt(node, step, rv.recIdx)?.payload ?? null)" :key="kv.k" class="lal__kv">
+                      <span class="lal__kvk">{{ kv.k }}</span>
+                      <span class="lal__kvv">{{ kv.v }}</span>
+                    </div>
+                  </div>
+                  <div v-if="bodyPreview(cellAt(node, step, rv.recIdx)?.payload ?? null)" class="lal__body">
+                    {{ bodyPreview(cellAt(node, step, rv.recIdx)?.payload ?? null) }}
+                  </div>
+                </template>
+
+                <!-- function / output: LogBuilder snapshot -->
+                <template v-else>
+                  <div class="lal__kvs">
+                    <div v-for="kv in outputEntries(cellAt(node, step, rv.recIdx)?.payload ?? null)" :key="kv.k" class="lal__kv">
+                      <span class="lal__kvk">{{ kv.k }}</span>
+                      <span class="lal__kvv">{{ kv.v }}</span>
+                    </div>
+                  </div>
+                  <div
+                    v-if="logBuilderOutput(cellAt(node, step, rv.recIdx)?.payload ?? null)?.tags?.length"
+                    class="lal__tags"
+                  >
+                    <span
+                      v-for="(t, ti) in logBuilderOutput(cellAt(node, step, rv.recIdx)?.payload ?? null)?.tags ?? []"
+                      :key="ti"
+                      class="lal__tag"
+                      :class="{
+                        'lal__tag--orig': t.status === 'original',
+                        'lal__tag--add': t.status === 'lal-added',
+                        'lal__tag--over': t.status === 'lal-override',
+                      }"
+                    >{{ t.key }}={{ t.value }}</span>
+                  </div>
+                  <div v-if="contentPreview(cellAt(node, step, rv.recIdx)?.payload ?? null)" class="lal__body">
+                    {{ contentPreview(cellAt(node, step, rv.recIdx)?.payload ?? null) }}
+                  </div>
+                </template>
+                <div v-if="cellAt(node, step, rv.recIdx)?.payload?.aborted" class="lal__abort">aborted</div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
     </template>
   </DebugView>
 </template>
@@ -489,120 +638,231 @@ function refetchSource(): void {
   font-style: italic;
 }
 
-.lal__waterfall {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 15.5px;
+.lal__matrixwrap {
+  overflow: auto;
+  border: 1px solid var(--rr-border);
 }
 
-.lal__waterfall th,
-.lal__waterfall td {
-  padding: 6px 8px;
-  text-align: left;
+.lal__matrix {
+  display: grid;
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  background: var(--rr-bg);
+  min-width: 100%;
+}
+
+.lal__hdrlbl {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  background: var(--rr-bg2);
+  padding: 8px 10px;
+  border-right: 1px solid var(--rr-border);
   border-bottom: 1px solid var(--rr-border);
-  vertical-align: top;
-}
-
-.lal__row {
-  cursor: pointer;
-  transition: background-color 80ms;
-}
-
-.lal__row--hovered {
-  background: var(--rr-bg3);
-}
-
-.lal__waterfall th {
-  font-family: var(--rr-font-mono);
-  font-size: 13px;
-  letter-spacing: 1.1px;
+  color: var(--rr-dim);
+  font-size: 10px;
+  letter-spacing: 1px;
   text-transform: uppercase;
-  color: var(--rr-dim);
 }
 
-.lal__line {
-  width: 36px;
-  font-family: var(--rr-font-mono);
-  color: var(--rr-dim);
+.lal__hdrec {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px 10px;
+  background: var(--rr-bg2);
+  border-right: 1px solid var(--rr-border);
+  border-bottom: 2px solid transparent;
+  cursor: default;
 }
 
-.lal__source {
-  width: 200px;
-  font-family: var(--rr-font-mono);
-  color: var(--rr-ink2);
+.lal__hdrec--pinned {
+  border-bottom-color: var(--rr-accent, var(--rr-active));
 }
 
-.lal__source code {
-  font-family: var(--rr-font-mono);
+.lal__hdrtitle {
+  color: var(--rr-heading);
+  font-size: 11px;
+}
+
+.lal__steplbl {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding: 10px 10px;
   background: var(--rr-bg);
-  padding: 1px 4px;
-}
-
-.lal__kind {
-  width: 110px;
-}
-
-.lal__cont {
-  width: 70px;
-}
-
-.lal__result {
-  font-family: var(--rr-font-mono);
-  font-size: 15px;
-}
-
-.lal__flags {
+  border-right: 1px solid var(--rr-border);
+  border-bottom: 1px solid var(--rr-border);
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.lal__flag {
-  display: inline-block;
-  padding: 1px 6px;
-  background: var(--rr-bg);
-  font-family: var(--rr-font-mono);
-  font-size: 13.5px;
-  color: var(--rr-ink2);
+.lal__stepkind {
+  color: var(--rr-heading);
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
 }
 
-.lal__flag--ok {
-  color: var(--rr-ok, #5fa56f);
-}
-
-.lal__flag--warn {
-  color: var(--rr-warn, #d4a93b);
-}
-
-.lal__preview {
-  margin-top: 4px;
-  font-family: var(--rr-font-mono);
-  font-size: 14.5px;
+.lal__stepct {
   color: var(--rr-dim);
+  font-size: 10px;
 }
 
-.lal__preview code {
+.lal__cell {
+  padding: 8px 10px;
+  border-right: 1px solid var(--rr-border);
+  border-bottom: 1px solid var(--rr-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  background: transparent;
+  min-width: 0;
+}
+
+.lal__cell:hover {
+  background: var(--rr-bg2);
+}
+
+.lal__cell--pinned {
+  background: rgba(143, 175, 199, 0.05);
+}
+
+.lal__cell--selected,
+.lal__cell--selected:hover {
+  background: var(--rr-bg3);
+  outline: 1px solid var(--rr-accent, var(--rr-active));
+  outline-offset: -1px;
+}
+
+.lal__cell--missing {
+  cursor: default;
   background: var(--rr-bg);
-  padding: 1px 4px;
+  opacity: 0.5;
+}
+
+.lal__cellabsent {
+  color: var(--rr-dim);
+  font-style: italic;
+  font-size: 11px;
+}
+
+.lal__kvs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 8px;
+}
+
+.lal__kv {
+  display: contents;
+}
+
+.lal__kvk {
+  color: var(--rr-dim);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  align-self: center;
+}
+
+.lal__kvv {
+  color: var(--rr-ink);
+  word-break: break-all;
+  font-size: 11px;
+}
+
+.lal__body {
+  background: var(--rr-bg2);
+  border: 1px solid var(--rr-border);
+  padding: 4px 6px;
   color: var(--rr-ink2);
+  font-size: 10.5px;
+  line-height: 1.4;
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 
 .lal__tags {
-  width: 160px;
-  font-family: var(--rr-font-mono);
-  font-size: 14.5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.lal__tag {
+  padding: 1px 5px;
+  font-size: 10px;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+  color: var(--rr-ink2);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lal__tag--orig {
   color: var(--rr-ink2);
 }
 
-.lal__tagcount {
-  display: inline-block;
-  min-width: 18px;
-  text-align: right;
-  color: var(--rr-ink);
+.lal__tag--add {
+  color: var(--rr-accent, var(--rr-active));
+  border-color: var(--rr-accent, var(--rr-active));
 }
 
-.lal__tagsep {
+.lal__tag--over {
+  color: var(--rr-warn, #d6a96d);
+  border-color: var(--rr-warn, #d6a96d);
+}
+
+.lal__abort {
+  color: var(--rr-warn, #d6a96d);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.lal__src {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+}
+
+.lal__srch {
+  padding: 6px 10px;
+  background: var(--rr-bg3);
+  border-bottom: 1px solid var(--rr-border);
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  letter-spacing: 0.8px;
   color: var(--rr-dim);
-  margin: 0 4px;
+}
+
+.lal__srcbody {
+  margin: 0;
+  padding: 10px;
+  font-family: var(--rr-font-mono);
+  font-size: 13.5px;
+  color: var(--rr-ink);
+  white-space: pre-wrap;
+  overflow: auto;
+  flex: 1 1 auto;
+}
+
+.lal__srcempty {
+  padding: 14px;
+  margin: 0;
+  color: var(--rr-dim);
+  font-style: italic;
+}
+
+.lal__hl {
+  background: var(--rr-accent, var(--rr-active));
+  color: var(--rr-bg);
+  padding: 1px 2px;
 }
 </style>

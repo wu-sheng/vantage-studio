@@ -27,6 +27,7 @@ import type {
   ListEnvelope,
   ListRow,
   MalOutputPayload,
+  MalSampleRow as MalSampleItem,
   MalSamplesPayload,
   NodeSlice,
   SessionRecord,
@@ -34,18 +35,15 @@ import type {
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
-import { useRuleSource } from '../../composables/useRuleSource.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
-import DebugSourcePane from './DebugSourcePane.vue';
 import {
   isMalOutputPayload,
   isMalSamplesPayload,
   sampleTone,
   shortHash,
 } from './payload.js';
-import { findLineMatches } from './sourceMatch.js';
 
 interface RuleOption {
   catalog: Catalog;
@@ -159,32 +157,45 @@ const ruleContentQuery = useQuery({
 });
 
 /** Extract metric names from the rule body. A MAL rule file is YAML
- *  with `metricsRules:` followed by a list of `- name: <metric>`
- *  entries. We regex-scan rather than fully parse YAML to keep the
- *  bundle dependency-free; the structure is rigid enough that a
- *  simple match is reliable. Comments and indentation are tolerated. */
+ *  with an optional top-level `metricPrefix:` and `metricsRules:`
+ *  followed by `- name: <inner>` entries. The OAP registers each
+ *  metric under the **composed** name `<prefix>_<inner>` (the bare
+ *  inner name is not a debug key — installs against it 404 with
+ *  `rule_not_found`). We regex-scan rather than fully parse YAML to
+ *  keep the bundle dependency-free; the structure is rigid enough
+ *  that a simple match is reliable. */
+const METRIC_PREFIX_RE = /^metricPrefix:[ \t]*([A-Za-z_][A-Za-z0-9_]*)/m;
 const METRIC_NAME_RE = /^[ \t]*-[ \t]+name:[ \t]*([A-Za-z_][A-Za-z0-9_]*)/gm;
 const metricNames = computed<string[]>(() => {
   const c = ruleContentQuery.data.value;
   if (!c) return [];
+  const prefixMatch = METRIC_PREFIX_RE.exec(c);
+  const prefix = prefixMatch?.[1] ?? '';
   const seen = new Set<string>();
   for (const m of c.matchAll(METRIC_NAME_RE)) {
-    seen.add(m[1]!);
+    const inner = m[1]!;
+    seen.add(prefix === '' ? inner : `${prefix}_${inner}`);
   }
   return [...seen].sort((a, b) => a.localeCompare(b));
 });
 
-/** When the file changes, clear stale metric selection (unless the
- *  new file already has a matching metric — keeps the deep-link
- *  preselect intact across the watch). */
-watch(selectedRule, () => {
-  if (selectedMetric.value && !metricNames.value.includes(selectedMetric.value)) {
-    // wait for content load before clearing — only clear if content is
-    // loaded and metric is genuinely absent
-  }
-});
+/** Reconcile the deep-link `?ruleName=` against the parsed metric
+ *  list once the file's YAML has loaded. Deep-links from the editor's
+ *  gutter ▶ and the catalog row carry the **bare** inner `name:` value
+ *  (e.g. `filtered_requests`), but the MAL install key is the composed
+ *  `<metricPrefix>_<inner>` (e.g. `e2e_dsldbg_filtered_requests`). If
+ *  the bare form arrives, resolve it to the unique composed entry that
+ *  ends in `_<bare>`; only clear when no match exists in the loaded
+ *  file (i.e. truly stale link). */
 watch(metricNames, (names) => {
-  if (selectedMetric.value && !names.includes(selectedMetric.value) && names.length > 0) {
+  if (names.length === 0 || !selectedMetric.value) return;
+  if (names.includes(selectedMetric.value)) return;
+  const bare = selectedMetric.value;
+  const suffix = `_${bare}`;
+  const matches = names.filter((n) => n === bare || n.endsWith(suffix));
+  if (matches.length === 1) {
+    selectedMetric.value = matches[0]!;
+  } else {
     selectedMetric.value = '';
   }
 });
@@ -214,33 +225,61 @@ async function startSampling(): Promise<void> {
   });
 }
 
-interface MalSampleRow {
-  rec: SessionRecord;
-  sample: SessionSample;
+interface MalBefore {
   samples: MalSamplesPayload | null;
   output: MalOutputPayload | null;
 }
 
-interface MalNodeView extends NodeSlice {
+interface MalSampleRow {
+  rec: SessionRecord;
+  recordIdx: number;
+  nodeKey: string;
+  sample: SessionSample;
+  samples: MalSamplesPayload | null;
+  output: MalOutputPayload | null;
+  /** Previous sample's payload — what this step received as input.
+   *  Null on the first sample (no upstream step). */
+  before: MalBefore | null;
+}
+
+interface MalRecordView {
+  rec: SessionRecord;
+  recordIdx: number;
   rows: MalSampleRow[];
+}
+
+interface MalNodeView extends NodeSlice {
+  recordViews: MalRecordView[];
 }
 
 const nodeViews = computed<MalNodeView[]>(() => {
   const s = dbg.session.value;
   if (!s) return [];
   return s.nodes.map((n) => {
-    const rows: MalSampleRow[] = [];
-    for (const rec of n.records ?? []) {
+    const nKey = n.nodeId ?? n.peer ?? '?';
+    const recordViews: MalRecordView[] = (n.records ?? []).map((rec, ri) => {
+      const rows: MalSampleRow[] = [];
+      let prevSamples: MalSamplesPayload | null = null;
+      let prevOutput: MalOutputPayload | null = null;
       for (const sample of rec.samples ?? []) {
+        const thisSamples = isMalSamplesPayload(sample.payload) ? sample.payload : null;
+        const thisOutput = isMalOutputPayload(sample.payload) ? sample.payload : null;
         rows.push({
           rec,
+          recordIdx: ri,
+          nodeKey: nKey,
           sample,
-          samples: isMalSamplesPayload(sample.payload) ? sample.payload : null,
-          output: isMalOutputPayload(sample.payload) ? sample.payload : null,
+          samples: thisSamples,
+          output: thisOutput,
+          before:
+            rows.length === 0 ? null : { samples: prevSamples, output: prevOutput },
         });
+        prevSamples = thisSamples;
+        prevOutput = thisOutput;
       }
-    }
-    return { ...n, rows };
+      return { rec, recordIdx: ri, rows };
+    });
+    return { ...n, recordViews };
   });
 });
 
@@ -248,11 +287,9 @@ function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
 }
 
-/** Surface the sample-family count concisely. The MAL file-level
- *  filter probe nests `items[]` per family — recurse one level so
- *  the operator sees `2 families · 3 samples` instead of "items[]
- *  is an array". */
-function summariseSamples(p: MalSamplesPayload): string {
+/** Surface the sample-family count concisely. */
+function summariseSamples(p: MalSamplesPayload | null): string {
+  if (!p) return '—';
   if (p.empty === true) return 'empty family';
   const parts: string[] = [];
   if (p.families !== undefined) parts.push(`${p.families} families`);
@@ -260,44 +297,200 @@ function summariseSamples(p: MalSamplesPayload): string {
   return parts.length > 0 ? parts.join(' · ') : '—';
 }
 
-// ── Source pane plumbing ────────────────────────────────────────────
+function formatTime(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms3 = String(d.getMilliseconds()).padStart(3, '0');
+  return `${hh}:${mm}:${ss}.${ms3}`;
+}
 
-const hoveredRow = ref<MalSampleRow | null>(null);
+/** Compose the metric name from rule metadata when available. The
+ *  recorder fills `metricPrefix` + `name` for MAL — the live key is
+ *  `<prefix>_<name>`. Falls back to `ruleName` if either is missing. */
+function metricLabel(rec: SessionRecord): string {
+  const r = rec.rule;
+  if (r.metricPrefix && r.name) return `${r.metricPrefix}_${r.name}`;
+  return r.name ?? r.ruleName;
+}
 
-const sourceCatalog = computed<Catalog | null>(() =>
-  dbg.session.value === null ? null : selectedRule.value?.catalog ?? null,
-);
-const sourceName = computed<string | null>(() =>
-  dbg.session.value === null ? null : selectedRule.value?.name ?? null,
-);
-const { source: ruleSource, query: sourceQuery } = useRuleSource({
-  catalog: sourceCatalog,
-  name: sourceName,
-});
+// ── Click-to-select for source-pane highlight ──────────────────────
 
-/** Captured DSL of the most recent record (any node) — fed into the
- *  source pane's stale detection (compares to loaded rule body). */
-const pageDsl = computed<string | null>(() => {
-  const s = dbg.session.value;
-  if (!s) return null;
-  for (let i = s.nodes.length - 1; i >= 0; i--) {
-    const recs = s.nodes[i]!.records;
-    if (recs && recs.length > 0) {
-      return recs[recs.length - 1]!.dsl || null;
+/** Single-row selection: clicking a step's label marks it selected,
+ *  which (a) lights up the rail dot, (b) opens the top source pane
+ *  with the captured DSL, and (c) `<mark>`s the matching expression
+ *  fragment inside that DSL. Click the same row again to clear. */
+const selectedRow = ref<MalSampleRow | null>(null);
+
+function selectRow(row: MalSampleRow): void {
+  selectedRow.value = selectedRow.value === row ? null : row;
+}
+
+interface FlatRow {
+  name: string;
+  labels: Record<string, string>;
+  value: number;
+}
+
+const ROWS_CAP = 50;
+
+/** Total leaf-row count across both shapes (flat per-stage items, or
+ *  nested per-family items on the file-level filter probe). Drives
+ *  the `in → out` counts on every stage label. */
+function countRows(p: MalSamplesPayload | null): number {
+  if (!p) return 0;
+  if (p.empty === true) return 0;
+  if (p.items && p.items.length > 0) {
+    const first = p.items[0]! as MalSampleItem & MalSamplesPayload;
+    const isFlat = typeof first.name === 'string' && typeof first.value === 'number';
+    if (isFlat) return p.items.length;
+    let total = 0;
+    for (const fam of p.items as MalSamplesPayload[]) {
+      total += fam.samples ?? (fam.items?.length ?? 0);
+    }
+    return total;
+  }
+  return p.samples ?? 0;
+}
+
+/** Flatten any payload (flat or nested) to up to ROWS_CAP `{name,
+ *  labels, value}` rows for the right-pane RowsTable. */
+function flattenRows(p: MalSamplesPayload | null): FlatRow[] {
+  if (!p || p.empty === true || !p.items || p.items.length === 0) return [];
+  const out: FlatRow[] = [];
+  const first = p.items[0]! as MalSampleItem & MalSamplesPayload;
+  const isFlat = typeof first.name === 'string' && typeof first.value === 'number';
+  if (isFlat) {
+    for (const it of p.items as MalSampleItem[]) {
+      if (out.length >= ROWS_CAP) break;
+      out.push({ name: it.name, labels: it.labels ?? {}, value: it.value });
+    }
+  } else {
+    for (const fam of p.items as MalSamplesPayload[]) {
+      if (fam.empty === true) continue;
+      for (const it of (fam.items ?? []) as MalSampleItem[]) {
+        if (out.length >= ROWS_CAP) break;
+        if (typeof it.name !== 'string') continue;
+        out.push({ name: it.name, labels: it.labels ?? {}, value: it.value });
+      }
     }
   }
-  return null;
-});
+  return out;
+}
 
-const highlightedLines = computed<readonly number[]>(() => {
-  const row = hoveredRow.value;
-  const src = ruleSource.value;
-  if (!row || !src) return [];
-  return findLineMatches(src.content, row.sample.sourceText);
-});
+function labelLines(labels: Record<string, string>): string[] {
+  const entries = Object.entries(labels);
+  if (entries.length === 0) return [];
+  return entries.map(([k, v]) => `${k}=${v}`);
+}
 
-function refetchSource(): void {
-  void sourceQuery.refetch();
+function inCountStr(row: MalSampleRow): string {
+  if (row.before === null) return '—';
+  if (row.before.output) return '1';
+  return String(countRows(row.before.samples));
+}
+
+function outCountStr(row: MalSampleRow): string {
+  if (row.output) return '1';
+  return String(countRows(row.samples));
+}
+
+function isDrop(row: MalSampleRow): boolean {
+  if (row.output) return false;
+  if (row.before === null) return false;
+  if (row.before.output) return false;
+  return countRows(row.samples) < countRows(row.before.samples);
+}
+
+interface Segment {
+  text: string;
+  highlight: boolean;
+}
+
+/** The selected step's expression fragment — empty when nothing is
+ *  selected, so meta-strip highlights collapse to no-ops. */
+const selectedFragment = computed<string>(() =>
+  selectedRow.value?.sample.sourceText.trim() ?? '',
+);
+
+/** Split a rule field into highlight / plain segments around every
+ *  exact occurrence of the selected step's `sourceText`. Drives the
+ *  inline `<mark>` collaborative highlight inside `metric / filter /
+ *  exp / suffix` — clicking a step makes the matching expression light
+ *  up in the rule definition above the chain. */
+function highlightSegments(text: string | undefined, fragment: string): Segment[] {
+  if (!text) return [];
+  if (fragment === '') return [{ text, highlight: false }];
+  const segments: Segment[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const at = text.indexOf(fragment, cursor);
+    if (at < 0) {
+      segments.push({ text: text.slice(cursor), highlight: false });
+      break;
+    }
+    if (at > cursor) segments.push({ text: text.slice(cursor, at), highlight: false });
+    segments.push({ text: fragment, highlight: true });
+    cursor = at + fragment.length;
+  }
+  return segments;
+}
+
+// ── Entity expansion (output sample) ────────────────────────────────
+
+interface EntityField {
+  k: string;
+  v: string;
+}
+
+/** Parse OAP's `MeterEntity#toString()` shape `Name(k=v, k=v, ...)`
+ *  into kv pairs. Fields are flat — no commas inside values for the
+ *  shipped scope set — so a naive split is fine. */
+function parseEntity(s: string): EntityField[] {
+  const m = s.match(/^[^(]+\((.*)\)$/);
+  if (!m) return [];
+  return m[1]!.split(', ').map((pair) => {
+    const eq = pair.indexOf('=');
+    if (eq < 0) return { k: pair, v: '' };
+    return { k: pair.slice(0, eq), v: pair.slice(eq + 1) };
+  });
+}
+
+function entityFields(s: string, includeNulls: boolean): EntityField[] {
+  const all = parseEntity(s);
+  return includeNulls ? all : all.filter((f) => f.v !== 'null');
+}
+
+const expandedEntities = ref<Set<string>>(new Set());
+
+function rowEntityKey(row: MalSampleRow): string {
+  return `${row.nodeKey}:${row.recordIdx}`;
+}
+
+function isEntityExpanded(row: MalSampleRow): boolean {
+  return expandedEntities.value.has(rowEntityKey(row));
+}
+
+function toggleEntity(row: MalSampleRow): void {
+  const k = rowEntityKey(row);
+  const next = new Set(expandedEntities.value);
+  if (next.has(k)) next.delete(k);
+  else next.add(k);
+  expandedEntities.value = next;
+}
+
+/** OAP doesn't serialise the materialised value on the output payload
+ *  (`MALDebugRecorderImpl.meterEmitPayload` emits only metric / entity /
+ *  valueType / timeBucket — the `AcceptableValue` is intentionally
+ *  dropped). The actual number lives on the upstream sample family
+ *  (`row.before.samples`), so we surface it back here. Multi-row
+ *  families render every label-tuple's value; a single-row family
+ *  drops to just the scalar. */
+function outputValueRows(row: MalSampleRow): FlatRow[] {
+  if (!row.output) return [];
+  if (!row.before?.samples) return [];
+  return flattenRows(row.before.samples);
 }
 </script>
 
@@ -351,76 +544,201 @@ function refetchSource(): void {
     </template>
 
     <template #idle-hint>
-      pick a rule and hit start. each captured execution shows up as a
-      group of sample rows — input / filter / function / output — with
-      the materialised metric on the terminal sample. the source pane
-      on the right loads the rule body when you hit start; hover a row
-      to highlight the matching DSL fragment.
-    </template>
-
-    <template #source-pane>
-      <DebugSourcePane
-        :source="ruleSource"
-        :loading="sourceQuery.isPending.value"
-        :error="sourceQuery.error.value === null ? null : String(sourceQuery.error.value)"
-        :highlighted-lines="highlightedLines"
-        :page-dsl="pageDsl"
-        lang="mal"
-        @refetch="refetchSource"
-      />
+      pick a rule and hit start. each captured execution renders as a
+      record card; rows inside walk the chain
+      <code>input → filter → function → output</code> with
+      <em>before</em> / <em>exp</em> / <em>after</em> for every step.
+      click a row to inspect its captured DSL on the source pane (toggle
+      "show source" in the capture header).
     </template>
 
     <template #node-body="{ node }">
-      <div v-if="node.rows.length === 0" class="mal__empty">
-        no MAL samples from this node
+      <div v-if="node.recordViews.length === 0" class="mal__empty">
+        no MAL records from this node
       </div>
-      <table v-else class="mal__waterfall">
-        <thead>
-          <tr>
-            <th class="mal__source">source / fragment</th>
-            <th class="mal__kind">type</th>
-            <th class="mal__cont">cont</th>
-            <th class="mal__result">result</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="(row, idx) in node.rows"
-            :key="`${nodeKey(node)}-${idx}`"
-            class="mal__row"
-            :class="{ 'mal__row--hovered': hoveredRow === row }"
-            @mouseenter="hoveredRow = row"
-            @mouseleave="hoveredRow = null"
-          >
-            <td class="mal__source">
-              <code>{{ row.sample.sourceText || '—' }}</code>
-            </td>
-            <td class="mal__kind">
-              <Pill :tone="sampleTone(row.sample.type)">{{ row.sample.type }}</Pill>
-            </td>
-            <td class="mal__cont">
-              <Pill :tone="row.sample.continueOn ? 'ok' : 'warn'">
-                {{ row.sample.continueOn ? 'cont' : 'stop' }}
-              </Pill>
-            </td>
-            <td class="mal__result">
-              <template v-if="row.output">
-                <div class="mal__meter">
-                  <div><span class="mal__lbl">metric</span> {{ row.output.metric }}</div>
-                  <div><span class="mal__lbl">function</span> {{ row.output.valueType }}</div>
-                  <div><span class="mal__lbl">entity</span> <code>{{ row.output.entity }}</code></div>
-                  <div><span class="mal__lbl">timeBucket</span> {{ row.output.timeBucket }}</div>
+      <div v-else class="mal__records">
+        <article
+          v-for="rv in node.recordViews"
+          :key="`${nodeKey(node)}-${rv.recordIdx}`"
+          class="mal__rec"
+        >
+          <header class="mal__rech">
+            <span class="mal__recidx">#{{ rv.recordIdx + 1 }}</span>
+            <span class="mal__rectime">{{ formatTime(rv.rec.startedAtMs) }}</span>
+            <span class="mal__recmeta">{{ rv.rows.length }} steps</span>
+          </header>
+          <dl class="mal__rmeta">
+            <div class="mal__rmpair">
+              <dt>metric</dt>
+              <dd><code>{{ metricLabel(rv.rec) }}</code></dd>
+            </div>
+            <div v-if="rv.rec.rule.filter" class="mal__rmpair">
+              <dt>filter</dt>
+              <dd><code><template
+                v-for="(seg, i) in highlightSegments(rv.rec.rule.filter, selectedFragment)"
+                :key="i"
+              ><mark
+                v-if="seg.highlight"
+                class="mal__hl"
+              >{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></code></dd>
+            </div>
+            <div v-if="rv.rec.rule.exp" class="mal__rmpair">
+              <dt>exp</dt>
+              <dd><code><template
+                v-for="(seg, i) in highlightSegments(rv.rec.rule.exp, selectedFragment)"
+                :key="i"
+              ><mark
+                v-if="seg.highlight"
+                class="mal__hl"
+              >{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></code></dd>
+            </div>
+            <div v-if="rv.rec.rule.expSuffix" class="mal__rmpair">
+              <dt>suffix</dt>
+              <dd><code><template
+                v-for="(seg, i) in highlightSegments(rv.rec.rule.expSuffix, selectedFragment)"
+                :key="i"
+              ><mark
+                v-if="seg.highlight"
+                class="mal__hl"
+              >{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></code></dd>
+            </div>
+          </dl>
+          <div class="mal__stages">
+            <template v-for="(row, idx) in rv.rows" :key="`${rv.recordIdx}-${idx}`">
+              <div
+                class="mal__stagelbl"
+                :class="{
+                  'mal__stagelbl--selected': selectedRow === row,
+                  'mal__stagelbl--stopped': !row.sample.continueOn,
+                }"
+                @click="selectRow(row)"
+              >
+                <div class="mal__stagekind">{{ row.sample.type }}</div>
+                <div class="mal__stagelabel">
+                  <code>{{ row.sample.sourceText || '—' }}</code>
                 </div>
-              </template>
-              <template v-else-if="row.samples">
-                <div class="mal__counts">
-                  {{ summariseSamples(row.samples) }}
+                <div class="mal__stageio">
+                  {{ inCountStr(row) }}
+                  <span class="mal__arrow">→</span>
+                  <span :class="{ 'mal__warn': isDrop(row) }">{{ outCountStr(row) }}</span>
+                  <span
+                    v-if="!row.sample.continueOn"
+                    class="mal__stopflag"
+                    title="chain stopped here"
+                  >stopped</span>
                 </div>
-              </template>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              </div>
+              <div class="mal__rail">
+                <div class="mal__railline" :class="{ 'mal__railline--last': idx === rv.rows.length - 1 }"></div>
+                <div
+                  class="mal__raildot"
+                  :class="{
+                    'mal__raildot--selected': selectedRow === row,
+                    'mal__raildot--stopped': !row.sample.continueOn,
+                    'mal__raildot--terminal': row.output !== null,
+                  }"
+                ></div>
+              </div>
+              <div class="mal__stageright" :class="{ 'mal__stageright--selected': selectedRow === row }">
+                <template v-if="row.output">
+                  <div class="mal__meter">
+                    <div><span class="mal__mlbl">metric</span><span class="mal__mval">{{ row.output.metric }}</span></div>
+                    <div><span class="mal__mlbl">function</span><span class="mal__mval">{{ row.output.valueType }}</span></div>
+                    <div v-if="outputValueRows(row).length === 1">
+                      <span class="mal__mlbl">value</span>
+                      <span class="mal__mval mal__mvalnum">{{ outputValueRows(row)[0]!.value }}</span>
+                    </div>
+                    <div v-else-if="outputValueRows(row).length > 1">
+                      <span class="mal__mlbl">values</span>
+                      <span class="mal__mval">
+                        <div
+                          v-for="(r, vi) in outputValueRows(row)"
+                          :key="vi"
+                          class="mal__mvline"
+                        >
+                          <span class="mal__mvalnum">{{ r.value }}</span>
+                          <span class="mal__dim">
+                            ({{ Object.entries(r.labels).map(([k, v]) => `${k}=${v}`).join(', ') || 'no labels' }})
+                          </span>
+                        </div>
+                      </span>
+                    </div>
+                    <div><span class="mal__mlbl">timeBucket</span><span class="mal__mval">{{ row.output.timeBucket }}</span></div>
+                  </div>
+                  <div class="mal__entity">
+                    <header class="mal__entityh">
+                      <span class="mal__mlbl">entity</span>
+                      <button
+                        type="button"
+                        class="mal__entitytog"
+                        @click="toggleEntity(row)"
+                      >
+                        {{ isEntityExpanded(row) ? 'compact' : 'show all' }}
+                      </button>
+                    </header>
+                    <div class="mal__entitykvs">
+                      <div
+                        v-for="f in entityFields(row.output.entity, isEntityExpanded(row))"
+                        :key="f.k"
+                        class="mal__entitykv"
+                      >
+                        <span class="mal__entityk">{{ f.k }}</span>
+                        <span
+                          class="mal__entityv"
+                          :class="{ 'mal__dim': f.v === 'null' }"
+                        >{{ f.v }}</span>
+                      </div>
+                      <div
+                        v-if="!isEntityExpanded(row) && entityFields(row.output.entity, true).length > entityFields(row.output.entity, false).length"
+                        class="mal__entitymore"
+                      >
+                        + {{ entityFields(row.output.entity, true).length - entityFields(row.output.entity, false).length }} null fields hidden
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template v-else-if="row.samples?.empty === true">
+                  <div class="mal__rtempty">empty family · 0 rows</div>
+                </template>
+                <template v-else>
+                  <table class="mal__rtable">
+                    <colgroup>
+                      <col class="mal__rtcolname" />
+                      <col class="mal__rtcollabels" />
+                      <col class="mal__rtcolval" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>name</th>
+                        <th>labels</th>
+                        <th class="mal__rtval">value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(it, j) in flattenRows(row.samples)" :key="j">
+                        <td class="mal__rtname">{{ it.name }}</td>
+                        <td class="mal__rtlabels">
+                          <span v-if="labelLines(it.labels).length === 0" class="mal__dim">—</span>
+                          <div v-for="line in labelLines(it.labels)" :key="line" class="mal__rtlabel">{{ line }}</div>
+                        </td>
+                        <td class="mal__rtval">{{ it.value }}</td>
+                      </tr>
+                      <tr v-if="flattenRows(row.samples).length === 0">
+                        <td colspan="3" class="mal__rtempty">no rows in payload</td>
+                      </tr>
+                      <tr v-if="countRows(row.samples) > flattenRows(row.samples).length">
+                        <td colspan="3" class="mal__rtmore">
+                          + {{ countRows(row.samples) - flattenRows(row.samples).length }} more rows
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </template>
+              </div>
+            </template>
+          </div>
+        </article>
+      </div>
     </template>
   </DebugView>
 </template>
@@ -465,82 +783,464 @@ function refetchSource(): void {
   font-style: italic;
 }
 
-.mal__waterfall {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 15.5px;
+.mal__records {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px;
 }
 
-.mal__waterfall th {
-  text-align: left;
-  padding: 6px 8px;
+.mal__rec {
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+}
+
+.mal__rech {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--rr-bg3);
+  border-bottom: 1px solid var(--rr-border);
+}
+
+.mal__recidx {
   font-family: var(--rr-font-mono);
+  color: var(--rr-heading);
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.mal__rectime {
+  font-family: var(--rr-font-mono);
+  color: var(--rr-ink2);
+  font-size: 14px;
+}
+
+.mal__recmeta {
+  margin-left: auto;
+  font-family: var(--rr-font-mono);
+  color: var(--rr-dim);
+  font-size: 13.5px;
+}
+
+.mal__rmeta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rr-border);
   font-size: 13px;
+}
+
+.mal__rmpair {
+  display: contents;
+}
+
+.mal__rmpair dt {
+  color: var(--rr-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  align-self: baseline;
+}
+
+.mal__rmpair dd {
+  margin: 0;
+  font-family: var(--rr-font-mono);
+  color: var(--rr-ink);
+  min-width: 0;
+}
+
+.mal__rmpair code {
+  font-family: var(--rr-font-mono);
+  background: var(--rr-bg2);
+  padding: 1px 5px;
+  word-break: break-word;
+  white-space: pre-wrap;
+  display: inline;
+}
+
+.mal__stages {
+  display: grid;
+  grid-template-columns: 200px 32px minmax(0, 1fr);
+  padding: 6px 12px 12px;
+}
+
+.mal__stagelbl {
+  padding: 12px 10px 12px 10px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mal__stagelbl:hover {
+  background: var(--rr-bg2);
+}
+
+.mal__stagelbl--selected,
+.mal__stagelbl--selected:hover {
+  background: var(--rr-bg3);
+  border-left-color: var(--rr-accent, var(--rr-active));
+}
+
+.mal__stagelbl--stopped {
+  border-left-color: var(--rr-warn, #d6a96d);
+}
+
+.mal__stagekind {
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
   letter-spacing: 1.1px;
   text-transform: uppercase;
+  color: var(--rr-dim);
+}
+
+.mal__stagelbl--selected .mal__stagekind {
+  color: var(--rr-accent, var(--rr-active));
+}
+
+.mal__stagelabel {
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-heading);
+  word-break: break-word;
+  line-height: 1.3;
+}
+
+.mal__stagelabel code {
+  font-family: var(--rr-font-mono);
+  background: transparent;
+  padding: 0;
+}
+
+.mal__stageio {
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  color: var(--rr-dim);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mal__arrow {
+  color: var(--rr-ink2);
+}
+
+.mal__warn {
+  color: var(--rr-warn, #d6a96d);
+}
+
+.mal__stopflag {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--rr-warn, #d6a96d);
+  color: var(--rr-warn, #d6a96d);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  cursor: help;
+}
+
+.mal__rail {
+  position: relative;
+  min-height: 60px;
+}
+
+.mal__railline {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--rr-border);
+}
+
+.mal__railline--last {
+  bottom: 50%;
+}
+
+.mal__raildot {
+  position: absolute;
+  left: 50%;
+  top: 18px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--rr-border);
+  box-shadow: 0 0 0 3px var(--rr-bg);
+}
+
+.mal__raildot--terminal {
+  background: var(--rr-ok, #4ec9b0);
+}
+
+.mal__raildot--selected {
+  background: var(--rr-accent, var(--rr-active));
+}
+
+.mal__raildot--stopped {
+  background: var(--rr-warn, #d6a96d);
+}
+
+.mal__stageright {
+  padding: 10px 0 14px 14px;
+  min-width: 0;
+}
+
+.mal__stageright--selected {
+  background: var(--rr-bg3);
+}
+
+.mal__rtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+  /* Fixed layout so colgroup widths bind consistently across every
+     stage's table — keeps `name` / `labels` / `value` aligned vertically
+     down the record card regardless of per-step content length. */
+  table-layout: fixed;
+}
+
+.mal__rtcolname {
+  width: 280px;
+}
+
+.mal__rtcolval {
+  width: 90px;
+}
+
+/* labels column = remaining flex space (no width on the colgroup col). */
+
+.mal__rtable thead tr {
+  background: var(--rr-bg2);
+}
+
+.mal__rtable th {
+  text-align: left;
+  padding: 5px 8px;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-weight: 400;
   color: var(--rr-dim);
   border-bottom: 1px solid var(--rr-border);
 }
 
-.mal__waterfall td {
-  padding: 6px 8px;
-  vertical-align: top;
+.mal__rtable td {
+  padding: 5px 8px;
   border-bottom: 1px solid var(--rr-border);
+  vertical-align: top;
 }
 
-.mal__row {
-  cursor: pointer;
-  transition: background-color 80ms;
+.mal__rtable tbody tr:last-child td {
+  border-bottom: none;
 }
 
-.mal__row--hovered {
-  background: var(--rr-bg3);
+.mal__rtname {
+  color: var(--rr-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.mal__source {
-  width: 320px;
-  font-family: var(--rr-font-mono);
-  color: var(--rr-ink);
-}
-
-.mal__source code {
-  font-family: var(--rr-font-mono);
-  background: var(--rr-bg);
-  padding: 1px 4px;
-}
-
-.mal__kind {
-  width: 110px;
-}
-
-.mal__cont {
-  width: 70px;
-}
-
-.mal__result {
-  font-family: var(--rr-font-mono);
+.mal__rtlabels {
   color: var(--rr-ink2);
-  font-size: 15px;
+  word-break: break-all;
+  line-height: 1.5;
 }
 
-.mal__counts {
+.mal__rtlabel {
+  white-space: nowrap;
+}
+
+.mal__dim {
+  color: var(--rr-dim);
+  font-style: italic;
+}
+
+.mal__rtval {
+  text-align: right;
+  color: var(--rr-accent, var(--rr-active));
+  white-space: nowrap;
+  width: 1%;
+}
+
+.mal__rtempty {
+  padding: 10px;
+  color: var(--rr-dim);
+  font-style: italic;
+  text-align: center;
+}
+
+.mal__rtmore {
+  padding: 5px 8px;
+  color: var(--rr-dim);
+  font-style: italic;
+  text-align: right;
+}
+
+.mal__src {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+}
+
+.mal__srch {
+  padding: 6px 10px;
+  background: var(--rr-bg3);
+  border-bottom: 1px solid var(--rr-border);
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  letter-spacing: 0.8px;
+  color: var(--rr-dim);
+}
+
+.mal__srcbody {
+  margin: 0;
+  padding: 10px;
+  font-family: var(--rr-font-mono);
+  font-size: 13.5px;
+  color: var(--rr-ink);
+  white-space: pre-wrap;
+  overflow: auto;
+  flex: 1 1 auto;
+}
+
+.mal__srcempty {
+  padding: 14px;
+  margin: 0;
+  color: var(--rr-dim);
+  font-style: italic;
+}
+
+.mal__hl {
+  background: var(--rr-accent, var(--rr-active));
+  color: var(--rr-bg);
+  padding: 1px 2px;
 }
 
 .mal__meter {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 2px;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+  font-family: var(--rr-font-mono);
+  font-size: 12.5px;
 }
 
-.mal__lbl {
-  display: inline-block;
-  width: 90px;
+.mal__meter > div {
+  display: contents;
+}
+
+.mal__mlbl {
   color: var(--rr-dim);
-  font-size: 14px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  margin-right: 6px;
+  align-self: center;
+}
+
+.mal__mval {
+  color: var(--rr-ink);
+  word-break: break-all;
+}
+
+.mal__mval code {
+  font-family: var(--rr-font-mono);
+  background: transparent;
+  padding: 0;
+}
+
+.mal__mvalnum {
+  color: var(--rr-accent, var(--rr-active));
+  font-weight: 600;
+}
+
+.mal__mvline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.mal__entity {
+  margin-top: 8px;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+  font-family: var(--rr-font-mono);
+}
+
+.mal__entityh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--rr-bg2);
+  border-bottom: 1px solid var(--rr-border);
+}
+
+.mal__entitytog {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.mal__entitytog:hover {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
+}
+
+.mal__entitykvs {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.mal__entitykv {
+  display: contents;
+}
+
+.mal__entityk {
+  color: var(--rr-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  align-self: center;
+}
+
+.mal__entityv {
+  color: var(--rr-ink);
+  word-break: break-all;
+}
+
+.mal__entitymore {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  color: var(--rr-dim);
+  font-size: 10.5px;
+  font-style: italic;
 }
 </style>

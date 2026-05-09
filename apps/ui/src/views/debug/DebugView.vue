@@ -47,24 +47,31 @@ import { computed, type Ref } from 'vue';
 import Pill from '../../design/primitives/Pill.vue';
 import NodeCoverage from './NodeCoverage.vue';
 
-defineProps<{
-  /** Composable handle. Templates read `.value` on each ref. */
-  dbg: {
-    state: Ref<string>;
-    sessionId: Ref<string | null>;
-    error: Ref<string | null>;
-    session: Ref<SessionResponse | null>;
-    peerAcks: Ref<PeerInstallAck[]>;
-    installed: Ref<InstallSummary | null>;
-    priorCleanup: Ref<PriorCleanup | null>;
-  };
-  /** Per-node pre-shaped view rows. The DSL's `nodeViews` computed
-   *  returns NodeSlice-derived objects; the shell only needs
-   *  `nodeId`, `peer`, `status`, `totalBytes` to render the card
-   *  header — actual record rendering is done by the `node-body`
-   *  slot. */
-  nodeViews: N[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** Composable handle. Templates read `.value` on each ref. */
+    dbg: {
+      state: Ref<string>;
+      sessionId: Ref<string | null>;
+      error: Ref<string | null>;
+      session: Ref<SessionResponse | null>;
+      peerAcks: Ref<PeerInstallAck[]>;
+      installed: Ref<InstallSummary | null>;
+      priorCleanup: Ref<PriorCleanup | null>;
+    };
+    /** Per-node pre-shaped view rows. The DSL's `nodeViews` computed
+     *  returns NodeSlice-derived objects; the shell only needs
+     *  `nodeId`, `peer`, `status`, `totalBytes` to render the card
+     *  header — actual record rendering is done by the `node-body`
+     *  slot. */
+    nodeViews: N[];
+    /** Controlled visibility for the source-pane sidecar. The parent
+     *  decides when it's relevant (typically when the operator has
+     *  selected a step row). Default false → no sidecar at all. */
+    sourceOpen?: boolean;
+  }>(),
+  { sourceOpen: false },
+);
 
 const slots = defineSlots<{
   controls(): unknown;
@@ -79,6 +86,9 @@ const slots = defineSlots<{
 }>();
 
 const hasSourcePane = computed(() => slots['source-pane'] !== undefined);
+/** Source pane is rendered iff a slot was provided AND the parent
+ *  flagged it open (typically driven by step-row selection). */
+const sourceVisible = computed(() => hasSourcePane.value && props.sourceOpen);
 
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
@@ -135,25 +145,24 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
         <span class="dv__sid2">session {{ dbg.session.value.sessionId }}</span>
       </header>
 
-      <div class="dv__split" :class="{ 'dv__split--withpane': hasSourcePane }">
-        <div class="dv__nodes">
-          <div v-for="node in nodeViews" :key="nodeKey(node)" class="dv__node">
-            <header class="dv__nodeh">
-              <span class="dv__nodeid">{{ nodeKey(node) }}</span>
-              <Pill :tone="nodeStatusTone(node.status)">{{ node.status }}</Pill>
-              <span v-if="node.totalBytes !== undefined" class="dv__bytes">
-                {{ node.totalBytes }} bytes
-              </span>
-            </header>
-            <slot name="node-body" :node="node">
-              <slot name="empty" :node="node">
-                <div class="dv__nodeempty">no records from this node</div>
-              </slot>
+      <div v-if="sourceVisible" class="dv__sourcepane">
+        <slot name="source-pane" />
+      </div>
+
+      <div class="dv__nodes">
+        <div v-for="node in nodeViews" :key="nodeKey(node)" class="dv__node">
+          <header class="dv__nodeh">
+            <span class="dv__nodeid">{{ nodeKey(node) }}</span>
+            <Pill :tone="nodeStatusTone(node.status)">{{ node.status }}</Pill>
+            <span v-if="node.totalBytes !== undefined" class="dv__bytes">
+              {{ node.totalBytes }} bytes
+            </span>
+          </header>
+          <slot name="node-body" :node="node">
+            <slot name="empty" :node="node">
+              <div class="dv__nodeempty">no records from this node</div>
             </slot>
-          </div>
-        </div>
-        <div v-if="hasSourcePane" class="dv__sourcepane">
-          <slot name="source-pane" />
+          </slot>
         </div>
       </div>
     </section>
@@ -227,35 +236,13 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
   font-size: 15.5px;
 }
 
-.dv__split {
+.dv__sourcepane {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-}
-
-.dv__split--withpane {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
-  gap: 14px;
-  align-items: stretch;
-  /* Bound the pane height so the source body scrolls inside the
-     pane rather than growing the whole page. */
-  max-height: calc(100vh - 240px);
-  min-height: 300px;
-}
-
-.dv__split--withpane .dv__nodes {
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-width: 0;
-}
-
-.dv__split--withpane .dv__sourcepane {
-  display: flex;
+  /* Cap height so the source body scrolls inside the pane rather
+     than pushing the records below it off-screen. */
+  max-height: 260px;
   min-height: 0;
-  min-width: 0;
 }
 
 .dv__nodes {
