@@ -258,11 +258,11 @@ export interface MalSamplesPayload {
 }
 
 /** MAL `output`-type payload (the `appendMeterEmit` probe) — the
- *  materialised metric ready for L1 push. The recorder emits exactly
- *  four fields: `metric`, `entity`, `valueType`, `timeBucket`
- *  (`MALDebugRecorderImpl.meterEmitPayload`). The `AcceptableValue`
- *  itself isn't serialised — operators read the value off the
- *  per-stage SampleFamily payloads upstream. */
+ *  materialised metric ready for L1 push. The current recorder emits
+ *  `metric`, `entity`, `valueType`, `timeBucket`
+ *  (`MALDebugRecorderImpl.meterEmitPayload`); upstream is rolling out
+ *  a serialised `value` too. Both shapes are accepted — Studio renders
+ *  whatever fields are present without inferring from upstream stages. */
 export interface MalOutputPayload {
   metric: string;
   /** `MeterEntity#toString()` — operator-readable form of the entity
@@ -275,6 +275,11 @@ export interface MalOutputPayload {
   valueType: string;
   /** Time bucket of the emit (yyyyMMddHHmm). */
   timeBucket: number;
+  /** Materialised value(s) ready for storage. Optional today — only
+   *  set on OAP builds that serialise the `AcceptableValue`. Scalar
+   *  metrics report a number; histogram-style metrics report an
+   *  array (one entry per bucket / percentile). */
+  value?: number | number[];
 }
 
 // ─── LAL payload shapes ────────────────────────────────────────────

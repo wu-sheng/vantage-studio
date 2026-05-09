@@ -624,6 +624,16 @@ function toggleEntity(row: MalSampleRow): void {
   expandedEntities.value = next;
 }
 
+/** Output payloads carry a scalar number for plain meters and an
+ *  array of numbers for histogram / percentile meters (one per bucket
+ *  / per percentile). Render arrays inline as `[v1, v2, …]` so the
+ *  operator sees every component without us reaching into upstream
+ *  stages for the per-bucket labels. */
+function formatOutputValue(v: number | number[]): string {
+  if (Array.isArray(v)) return `[${v.join(', ')}]`;
+  return String(v);
+}
+
 </script>
 
 <template>
@@ -819,16 +829,19 @@ function toggleEntity(row: MalSampleRow): void {
               </div>
               <div class="mal__stageright" :class="{ 'mal__stageright--selected': selectedRow === row }">
                 <template v-if="row.output">
-                  <!-- Output payload renders verbatim: metric, function,
-                       timeBucket, and the entity. OAP intentionally
-                       omits the materialised value here (see
-                       `MALDebugRecorderImpl.meterEmitPayload`); the
-                       previous function's samples table — visible on
-                       its own row above — shows the value that fed
-                       into the emit. -->
+                  <!-- Output payload renders verbatim — every field
+                       present on the wire shows up; nothing is
+                       inferred from upstream stages. The materialised
+                       `value` is optional on the wire (only newer OAP
+                       builds serialise it) and renders only when the
+                       recorder included it. -->
                   <div class="mal__meter">
                     <div><span class="mal__mlbl">metric</span><span class="mal__mval">{{ row.output.metric }}</span></div>
                     <div><span class="mal__mlbl">function</span><span class="mal__mval">{{ row.output.valueType }}</span></div>
+                    <div v-if="row.output.value !== undefined">
+                      <span class="mal__mlbl">value</span>
+                      <span class="mal__mval mal__mvalnum">{{ formatOutputValue(row.output.value) }}</span>
+                    </div>
                     <div><span class="mal__mlbl">timeBucket</span><span class="mal__mval">{{ row.output.timeBucket }}</span></div>
                   </div>
                   <div class="mal__entity">
@@ -1390,6 +1403,11 @@ function toggleEntity(row: MalSampleRow): void {
   font-family: var(--rr-font-mono);
   background: transparent;
   padding: 0;
+}
+
+.mal__mvalnum {
+  color: var(--rr-accent, var(--rr-active));
+  font-weight: 600;
 }
 
 
