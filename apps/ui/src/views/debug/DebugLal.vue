@@ -409,6 +409,30 @@ function selectCell(cell: LalCell): void {
   selectedCell.value = selectedCell.value === cell ? null : cell;
 }
 
+// ── Single-record expand mode ─────────────────────────────────────
+
+/** When set, the matrix view collapses to a single record (full width
+ *  per cell — input / function@N / output stacked vertically). The
+ *  matrix is dense by design (one column per record), so an operator
+ *  drilling into one log line that has long content benefits from
+ *  losing the column constraint. Click "← matrix" on the expanded
+ *  view to drop back. */
+const expandedRecord = ref<{ nodeKey: string; recIdx: number } | null>(null);
+
+function expandRecord(nKey: string, recIdx: number): void {
+  expandedRecord.value = { nodeKey: nKey, recIdx };
+}
+
+function backToMatrix(): void {
+  expandedRecord.value = null;
+}
+
+function expandedRecordView(view: LalNodeView): LalRecordView | null {
+  const e = expandedRecord.value;
+  if (e === null || e.nodeKey !== nodeKey(view)) return null;
+  return view.recordViews.find((r) => r.recIdx === e.recIdx) ?? null;
+}
+
 const sourceDsl = computed<string | null>(() => {
   const sel = selectedCell.value;
   if (sel) return sel.rec.dsl ?? null;
@@ -584,6 +608,88 @@ void TAG_STATUS_TONE;
       <div v-if="node.recordViews.length === 0" class="lal__empty">
         no LAL records from this node
       </div>
+
+      <!-- Expanded single-record mode — full-width per step. -->
+      <div
+        v-else-if="expandedRecordView(node) !== null"
+        class="lal__solo"
+      >
+        <header class="lal__soloh">
+          <button type="button" class="lal__solback" @click="backToMatrix">← matrix</button>
+          <span class="lal__solotitle">{{ recordTitle(expandedRecordView(node)!) }}</span>
+        </header>
+        <article
+          v-for="step in node.steps"
+          :key="step.key"
+          class="lal__solorow"
+        >
+          <header class="lal__solorowh">
+            <span class="lal__stepkind">{{ step.label }}</span>
+          </header>
+          <template v-if="cellAt(node, step, expandedRecordView(node)!.recIdx) === undefined">
+            <div class="lal__cellabsent">— no sample for this step in this record</div>
+          </template>
+          <template v-else>
+            <template v-if="step.type === 'input'">
+              <div class="lal__kvs">
+                <div
+                  v-for="kv in inputEntries(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
+                  :key="kv.k"
+                  class="lal__kv"
+                >
+                  <span class="lal__kvk">{{ kv.k }}</span>
+                  <span class="lal__kvv">{{ kv.v }}</span>
+                </div>
+              </div>
+              <div
+                v-if="bodyPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
+                class="lal__body"
+              >
+                {{ bodyPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null) }}
+              </div>
+            </template>
+            <template v-else>
+              <div class="lal__kvs">
+                <div
+                  v-for="kv in outputEntries(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
+                  :key="kv.k"
+                  class="lal__kv"
+                >
+                  <span class="lal__kvk">{{ kv.k }}</span>
+                  <span class="lal__kvv">{{ kv.v }}</span>
+                </div>
+              </div>
+              <div
+                v-if="logBuilderOutput(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)?.tags?.length"
+                class="lal__tags"
+              >
+                <span
+                  v-for="(t, ti) in logBuilderOutput(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)?.tags ?? []"
+                  :key="ti"
+                  class="lal__tag"
+                  :class="{
+                    'lal__tag--orig': t.status === 'original',
+                    'lal__tag--add': t.status === 'lal-added',
+                    'lal__tag--over': t.status === 'lal-override',
+                  }"
+                >{{ t.key }}={{ t.value }}</span>
+              </div>
+              <div
+                v-if="contentPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
+                class="lal__body"
+              >
+                {{ contentPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null) }}
+              </div>
+            </template>
+            <div
+              v-if="cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload?.aborted"
+              class="lal__abort"
+            >aborted</div>
+          </template>
+        </article>
+      </div>
+
+      <!-- Default: per-record × per-block matrix. -->
       <div v-else class="lal__matrixwrap">
         <div
           class="lal__matrix"
@@ -600,7 +706,15 @@ void TAG_STATUS_TONE;
                 selectedCell !== null && selectedCell.recIdx === rv.recIdx,
             }"
           >
-            <div class="lal__hdrtitle">{{ recordTitle(rv) }}</div>
+            <div class="lal__hdrtitle">
+              {{ recordTitle(rv) }}
+              <button
+                type="button"
+                class="lal__expandbtn"
+                title="expand this record to full width"
+                @click.stop="expandRecord(nodeKey(node), rv.recIdx)"
+              >⤢</button>
+            </div>
           </div>
 
           <!-- step rows -->
@@ -755,6 +869,13 @@ void TAG_STATUS_TONE;
 .lal__matrixwrap {
   overflow: auto;
   border: 1px solid var(--rr-border);
+  /* Constrain the wrapper so both axes scroll INSIDE it — without a
+     bound, vertical scroll cascades to the outer .dv ancestor and
+     `position: sticky; left: 0` on the leftmost block-label column
+     binds to the wrong scroll context (the steplbl scrolls out with
+     the rest of the matrix instead of pinning). */
+  max-height: calc(100vh - 280px);
+  min-height: 200px;
 }
 
 .lal__matrix {
@@ -798,6 +919,87 @@ void TAG_STATUS_TONE;
 .lal__hdrtitle {
   color: var(--rr-heading);
   font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lal__expandbtn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-dim);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  width: 20px;
+  height: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.lal__expandbtn:hover {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
+}
+
+.lal__solo {
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.lal__soloh {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--rr-bg2);
+  border-bottom: 1px solid var(--rr-border);
+}
+
+.lal__solback {
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.lal__solback:hover {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
+}
+
+.lal__solotitle {
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-heading);
+}
+
+.lal__solorow {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rr-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lal__solorow:last-child {
+  border-bottom: none;
+}
+
+.lal__solorowh {
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--rr-accent, var(--rr-active));
 }
 
 .lal__steplbl {
