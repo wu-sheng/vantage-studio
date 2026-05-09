@@ -41,6 +41,7 @@ import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
 import { isOalMetricsPayload, isOalSourcePayload, sampleTone } from './payload.js';
+import { decodeEntityId } from './oalEntityId.js';
 
 const route = useRoute();
 const dbg = useDebugSession('oal');
@@ -256,6 +257,16 @@ function sourceFields(p: OalSourcePayload): OalKv[] {
     out.push({ k, v: String(v) });
   }
   return out;
+}
+
+/** Decoded annotation for a field — only `entityId` carries the
+ *  composite IDManager shape; everything else returns null and the
+ *  template skips the parenthetical. The OAL source class
+ *  (`OalSourcePayload.type`, e.g. `Service`, `Endpoint`,
+ *  `ServiceRelation`) selects the right per-scope decoder. */
+function decodeAnnotation(type: string, k: string, v: string): string | null {
+  if (k !== 'entityId') return null;
+  return decodeEntityId(type, v);
 }
 
 /** Same idea for the metrics payload — `type` is rendered out of band
@@ -527,7 +538,13 @@ const allFolded = computed<boolean>(
                       class="oal__kvline"
                     >
                       <span class="oal__lbl">{{ kv.k }}</span>
-                      <span class="oal__kvval">{{ kv.v }}</span>
+                      <span class="oal__kvval">
+                        {{ kv.v }}
+                        <span
+                          v-if="decodeAnnotation(row.source.type, kv.k, kv.v)"
+                          class="oal__decoded"
+                        >({{ decodeAnnotation(row.source.type, kv.k, kv.v) }})</span>
+                      </span>
                     </div>
                   </template>
                   <template v-else-if="row.metrics">
@@ -884,6 +901,12 @@ const allFolded = computed<boolean>(
 .oal__kvval {
   color: var(--rr-ink);
   word-break: break-all;
+}
+
+.oal__decoded {
+  color: var(--rr-dim);
+  font-size: 12px;
+  margin-left: 4px;
 }
 
 .oal__sourcefallback {
