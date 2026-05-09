@@ -319,15 +319,23 @@ const nodeViews = computed<LalNodeView[]>(() => {
           // verbatim DSL slice; surface that as the row's name so
           // operators see "tag stage: 'extractor'" instead of a
           // generic "function". Long slices are truncated; the
-          // line number lives in the kicker line.
+          // line number lives in the kicker line. In block-mode
+          // there's exactly one function probe per record (post-
+          // extractor LogBuilder snapshot) with no per-statement
+          // slice — call that row `extractor` since that's what the
+          // probe actually captured.
           const nameLabel =
             sample.type === 'function' && txt.length > 0
               ? txt.length > 60 ? `${txt.slice(0, 57)}…` : txt
               : '';
-          const kindLabel =
-            sample.type === 'function' && sourceLine > 0
-              ? `function @${sourceLine}`
-              : sample.type;
+          let kindLabel: string;
+          if (sample.type !== 'function') {
+            kindLabel = sample.type;
+          } else if (sourceLine > 0) {
+            kindLabel = `function @${sourceLine}`;
+          } else {
+            kindLabel = 'extractor';
+          }
           steps.push({ key, type: sample.type, sourceLine, kindLabel, nameLabel });
         }
         let perRec = cells.get(key);
