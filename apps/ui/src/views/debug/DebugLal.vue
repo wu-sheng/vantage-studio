@@ -46,6 +46,11 @@ import { useDebugHistory, type HistoryEntry } from '../../composables/useDebugHi
 import Btn from '../../design/primitives/Btn.vue';
 import DebugView from './DebugView.vue';
 import { isLalSamplePayload } from './payload.js';
+import {
+  DEFAULT_RETENTION_MINUTES,
+  MS_PER_MINUTE,
+  RECORD_CAP_MAX,
+} from './constants.js';
 
 const route = useRoute();
 const dbg = useDebugSession('lal');
@@ -62,8 +67,8 @@ const granularity = ref<Granularity>('block');
 // SessionLimits.MAX_RECORD_CAP on the OAP side is 100 (and so is the
 // default). The input is bounded the same way; lower if a single
 // execution is enough or you want the captured page tighter.
-const recordCap = ref<number>(100);
-const retentionMinutes = ref<number>(5);
+const recordCap = ref<number>(RECORD_CAP_MAX);
+const retentionMinutes = ref<number>(DEFAULT_RETENTION_MINUTES);
 
 /** Deep-link from a LAL rule card / Monaco gutter — `?file=&name=`
  *  pre-fills both. `name` is the inner ruleName; `file` is the LAL
@@ -161,7 +166,7 @@ async function startSampling(): Promise<void> {
     ruleName: selectedRule.value,
     granularity: granularity.value,
     recordCap: recordCap.value,
-    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionMillis: retentionMinutes.value * MS_PER_MINUTE,
   });
 }
 
@@ -225,7 +230,7 @@ function loadHistorical(entry: HistoryEntry): void {
   }
   if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
   if (entry.retentionMillis !== undefined) {
-    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / MS_PER_MINUTE));
   }
   selectedCell.value = null;
 }
@@ -251,7 +256,7 @@ function persistCapture(): void {
     ruleName: selectedRule.value,
     granularity: granularity.value,
     recordCap: recordCap.value,
-    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionMillis: retentionMinutes.value * MS_PER_MINUTE,
     retentionDeadline: dbg.retentionDeadline.value ?? undefined,
     recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
     nodeCount: sess.nodes.length,
@@ -278,7 +283,7 @@ watch(
     }
     if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
     if (entry.retentionMillis !== undefined) {
-      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / MS_PER_MINUTE));
     }
     dbg.resume(id, entry.retentionDeadline ?? null);
   },
@@ -381,12 +386,6 @@ interface KvEntry {
   v: string;
   hl?: boolean;
 }
-
-const TAG_STATUS_TONE: Record<NonNullable<import('@vantage-studio/api-client').LalLogBuilderTag['status']>, string> = {
-  original: 'rr-tag--orig',
-  'lal-added': 'rr-tag--add',
-  'lal-override': 'rr-tag--over',
-};
 
 function inputEntries(p: LalSamplePayload | null): KvEntry[] {
   const inp = logDataInput(p);
@@ -673,49 +672,6 @@ function cssEscape(s: string): string {
   return s.replace(/(["\\\[\]'])/g, '\\$1');
 }
 
-const sourceDsl = computed<string | null>(() => {
-  const sel = selectedCell.value;
-  if (sel) return sel.rec.dsl ?? null;
-  const s = displaySession.value;
-  if (!s) return null;
-  for (let i = s.nodes.length - 1; i >= 0; i--) {
-    const recs = s.nodes[i]!.records;
-    if (recs && recs.length > 0) return recs[recs.length - 1]!.dsl ?? null;
-  }
-  return null;
-});
-
-const sourceLabel = computed<string>(() => {
-  const sel = selectedCell.value;
-  if (!sel) return 'most recent record';
-  return `record ${sel.recIdx + 1} · ${sel.sample.type}${sel.sample.sourceLine ? ` @${sel.sample.sourceLine}` : ''}`;
-});
-
-interface SourceSegment {
-  text: string;
-  highlight: boolean;
-}
-
-const sourceSegments = computed<SourceSegment[]>(() => {
-  const dsl = sourceDsl.value;
-  if (!dsl) return [];
-  const fragment = selectedCell.value?.sample.sourceText.trim() ?? '';
-  if (fragment === '') return [{ text: dsl, highlight: false }];
-  const segments: SourceSegment[] = [];
-  let cursor = 0;
-  while (cursor < dsl.length) {
-    const at = dsl.indexOf(fragment, cursor);
-    if (at < 0) {
-      segments.push({ text: dsl.slice(cursor), highlight: false });
-      break;
-    }
-    if (at > cursor) segments.push({ text: dsl.slice(cursor, at), highlight: false });
-    segments.push({ text: fragment, highlight: true });
-    cursor = at + fragment.length;
-  }
-  return segments;
-});
-
 function formatTime(ms: number): string {
   const d = new Date(ms);
   const hh = String(d.getHours()).padStart(2, '0');
@@ -728,16 +684,12 @@ function formatTime(ms: number): string {
 function recordTitle(view: LalRecordView): string {
   return `record ${view.recIdx + 1} · ${formatTime(view.rec.startedAtMs)}`;
 }
-
-void TAG_STATUS_TONE;
-
 </script>
 
 <template>
   <DebugView
     :dbg="dbg"
     :node-views="nodeViews"
-    :source-open="selectedCell !== null"
     :view-session="historicalEntry?.session ?? null"
   >
     <template #controls>
@@ -786,7 +738,7 @@ void TAG_STATUS_TONE;
       </div>
       <div class="ctl">
         <label class="ctl__lbl">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="100" class="ctl__input" />
+        <input v-model.number="recordCap" type="number" min="1" :max="RECORD_CAP_MAX" class="ctl__input" />
       </div>
       <div class="ctl">
         <label class="ctl__lbl">retention (min)</label>
@@ -835,7 +787,7 @@ void TAG_STATUS_TONE;
             v-model.number="displayLimit"
             type="number"
             min="1"
-            max="100"
+            :max="RECORD_CAP_MAX"
             class="lal__limitinput"
           />
         </label>
@@ -851,34 +803,81 @@ void TAG_STATUS_TONE;
       matching fragment highlighted.
     </template>
 
-    <template #source-pane>
-      <div class="lal__src">
-        <header class="lal__srch">{{ sourceLabel }}</header>
-        <pre
-          v-if="sourceDsl"
-          class="lal__srcbody"
-        ><code><template
-          v-for="(seg, i) in sourceSegments"
-          :key="i"
-        ><mark
-          v-if="seg.highlight"
-          class="lal__hl"
-        >{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></code></pre>
-        <p v-else class="lal__srcempty">no captured DSL yet.</p>
-      </div>
-    </template>
-
     <template #node-body="{ node }">
       <div v-if="node.recordViews.length === 0" class="lal__empty">
         no LAL records from this node
       </div>
 
-      <!-- Expanded single-record mode — full-width per step. -->
-      <div
-        v-else-if="expandedRecordView(node) !== null"
-        class="lal__solo"
-      >
-        <header class="lal__soloh">
+      <!-- DSL pane stays mounted across both modes (matrix view AND
+           single-record expand) so the operator never loses the
+           rule-body reference when drilling into a column. -->
+      <div v-else class="lal__matrixblock">
+        <div class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
+          <aside
+            v-if="!sourcePanelOpen && sourceDslLines.length > 0"
+            class="lal__sourcestub"
+          >
+            <button
+              type="button"
+              class="lal__srctogglebtn"
+              title="show captured DSL panel"
+              aria-label="show captured DSL panel"
+              @click="sourcePanelOpen = true"
+            ><span class="lal__srctogglechev">»</span></button>
+            <span class="lal__sourcestublabel">Captured DSL</span>
+          </aside>
+          <aside
+            v-if="sourcePanelOpen && sourceDslLines.length > 0"
+            class="lal__sourcepane"
+          >
+            <header class="lal__sourceh">
+              <button
+                type="button"
+                class="lal__srctogglebtn"
+                title="fold captured DSL panel"
+                aria-label="fold captured DSL panel"
+                @click="sourcePanelOpen = false"
+              ><span class="lal__srctogglechev">«</span></button>
+              <span class="lal__sourcehtitle">captured DSL · click ▶ to jump</span>
+            </header>
+            <ol class="lal__sourcelines">
+              <li
+                v-for="(line, li) in sourceDslLines"
+                :key="li"
+                class="lal__sourceline"
+                :class="{
+                  'lal__sourceline--linked':
+                    stepKeyByLine.get(li + 1) !== undefined ||
+                    blockHookByLine.get(li + 1) !== undefined,
+                }"
+              >
+                <span class="lal__sourcelno">{{ li + 1 }}</span>
+                <button
+                  v-if="stepKeyByLine.get(li + 1)"
+                  type="button"
+                  class="lal__sourcehook"
+                  title="jump to this statement's row in the matrix"
+                  @click="jumpToStep(stepKeyByLine.get(li + 1)!)"
+                >▶</button>
+                <button
+                  v-else-if="blockHookByLine.get(li + 1)"
+                  type="button"
+                  class="lal__sourcehook lal__sourcehook--block"
+                  title="jump to the block-mode extractor row in the matrix"
+                  @click="jumpToStep(blockHookByLine.get(li + 1)!)"
+                >▶</button>
+                <span v-else class="lal__sourcehookbox" />
+                <code class="lal__sourcetext">{{ line || ' ' }}</code>
+              </li>
+            </ol>
+          </aside>
+
+          <!-- Right side: either expanded single-record view or matrix. -->
+          <div
+            v-if="expandedRecordView(node) !== null"
+            class="lal__solo"
+          >
+            <header class="lal__soloh">
           <button type="button" class="lal__solback" @click="backToMatrix">← matrix</button>
           <span class="lal__solotitle">{{ recordTitle(expandedRecordView(node)!) }}</span>
         </header>
@@ -972,68 +971,8 @@ void TAG_STATUS_TONE;
         </article>
       </div>
 
-      <!-- Default: per-record × per-block matrix. -->
-      <div v-else class="lal__matrixblock">
-        <div class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
-        <aside
-          v-if="!sourcePanelOpen && sourceDslLines.length > 0"
-          class="lal__sourcestub"
-        >
-          <button
-            type="button"
-            class="lal__srctogglebtn"
-            title="show captured DSL panel"
-            aria-label="show captured DSL panel"
-            @click="sourcePanelOpen = true"
-          ><span class="lal__srctogglechev">»</span></button>
-          <span class="lal__sourcestublabel">DSL</span>
-        </aside>
-        <aside
-          v-if="sourcePanelOpen && sourceDslLines.length > 0"
-          class="lal__sourcepane"
-        >
-          <header class="lal__sourceh">
-            <button
-              type="button"
-              class="lal__srctogglebtn"
-              title="fold captured DSL panel"
-              aria-label="fold captured DSL panel"
-              @click="sourcePanelOpen = false"
-            ><span class="lal__srctogglechev">«</span></button>
-            <span class="lal__sourcehtitle">captured DSL · click ▶ to jump</span>
-          </header>
-          <ol class="lal__sourcelines">
-            <li
-              v-for="(line, li) in sourceDslLines"
-              :key="li"
-              class="lal__sourceline"
-              :class="{
-                'lal__sourceline--linked':
-                  stepKeyByLine.get(li + 1) !== undefined ||
-                  blockHookByLine.get(li + 1) !== undefined,
-              }"
-            >
-              <span class="lal__sourcelno">{{ li + 1 }}</span>
-              <button
-                v-if="stepKeyByLine.get(li + 1)"
-                type="button"
-                class="lal__sourcehook"
-                title="jump to this statement's row in the matrix"
-                @click="jumpToStep(stepKeyByLine.get(li + 1)!)"
-              >▶</button>
-              <button
-                v-else-if="blockHookByLine.get(li + 1)"
-                type="button"
-                class="lal__sourcehook lal__sourcehook--block"
-                title="jump to the block-mode extractor row in the matrix"
-                @click="jumpToStep(blockHookByLine.get(li + 1)!)"
-              >▶</button>
-              <span v-else class="lal__sourcehookbox" />
-              <code class="lal__sourcetext">{{ line || ' ' }}</code>
-            </li>
-          </ol>
-        </aside>
-        <div class="lal__matrixwrap">
+          <!-- Default branch: dense matrix view. -->
+          <div v-else class="lal__matrixwrap">
         <div
           v-if="displayedRecords(node).length === 0"
           class="lal__nomatch"
@@ -1817,48 +1756,6 @@ void TAG_STATUS_TONE;
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-}
-
-.lal__src {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  border: 1px solid var(--rr-border);
-  background: var(--rr-bg);
-}
-
-.lal__srch {
-  padding: 6px 10px;
-  background: var(--rr-bg3);
-  border-bottom: 1px solid var(--rr-border);
-  font-family: var(--rr-font-mono);
-  font-size: 13px;
-  letter-spacing: 0.8px;
-  color: var(--rr-dim);
-}
-
-.lal__srcbody {
-  margin: 0;
-  padding: 10px;
-  font-family: var(--rr-font-mono);
-  font-size: 13.5px;
-  color: var(--rr-ink);
-  white-space: pre-wrap;
-  overflow: auto;
-  flex: 1 1 auto;
-}
-
-.lal__srcempty {
-  padding: 14px;
-  margin: 0;
-  color: var(--rr-dim);
-  font-style: italic;
-}
-
-.lal__hl {
-  background: var(--rr-accent, var(--rr-active));
-  color: var(--rr-bg);
-  padding: 1px 2px;
 }
 
 .lal__histbanner {

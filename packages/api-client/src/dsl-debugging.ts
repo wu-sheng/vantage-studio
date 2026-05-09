@@ -97,10 +97,23 @@ export interface StartSessionQuery {
   granularity?: Granularity;
 }
 
+/** Mirror of OAP's `SessionLimits.MAX_RECORD_CAP` — both default and
+ *  hard ceiling for `recordCap` on `POST /dsl-debugging/session`.
+ *  Studio's BFF rejects requests above this with `400
+ *  invalid_recordCap` before the OAP round-trip; UI inputs bound to
+ *  the same value. Keep in sync with `SessionLimits.java` upstream. */
+export const MAX_RECORD_CAP = 100;
+
+/** Mirror of OAP's `SessionLimits.MAX_RETENTION_MILLIS` — 1 hour
+ *  hard cap on per-session retention windows. */
+export const MAX_RETENTION_MILLIS = 60 * 60 * 1000;
+
 /** Optional JSON body for `POST /dsl-debugging/session`. */
 export interface StartSessionBody {
-  /** Default 1000, max 10 000. Session moves to `captured` once this
-   *  many records have been appended. */
+  /** Default + hard cap 100 (`SessionLimits.MAX_RECORD_CAP`). Session
+   *  moves to `captured` once this many records have been appended.
+   *  OAP rejects `recordCap > 100` with `400 invalid_limits`; the BFF
+   *  short-circuits the same way before the OAP round-trip. */
   recordCap?: number;
   /** Default 5 min, max 1 h (3 600 000 ms). Wall-clock retention
    *  before the session is reaped. */
@@ -457,9 +470,10 @@ export interface SessionRecordRule {
 }
 
 /** One captured execution of the rule. The verbatim `dsl` is the
- *  rule source as it stood at capture time — used for hot-update
- *  awareness (the source pane can compare against `useRuleSource`'s
- *  loaded body to detect mid-session edits). */
+ *  rule source as it stood at capture time — Studio renders this
+ *  directly in the per-record card and the foldable LAL source pane,
+ *  so hot-update edits show up record-by-record without an extra
+ *  fetch (each record carries its own snapshot). */
 export interface SessionRecord {
   /** Unix-ms when the execution started on the receiving node. */
   startedAtMs: number;

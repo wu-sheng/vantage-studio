@@ -40,6 +40,11 @@ import { useDebugHistory, type HistoryEntry } from '../../composables/useDebugHi
 import Btn from '../../design/primitives/Btn.vue';
 import DebugView from './DebugView.vue';
 import { isMalOutputPayload, isMalSamplesPayload, shortHash } from './payload.js';
+import {
+  DEFAULT_RETENTION_MINUTES,
+  MS_PER_MINUTE,
+  RECORD_CAP_MAX,
+} from './constants.js';
 
 interface RuleOption {
   catalog: Catalog;
@@ -63,8 +68,8 @@ const selectedMetric = ref<string>('');
 // SessionLimits.MAX_RECORD_CAP on the OAP side is 100 (and so is the
 // default). The input is bounded the same way; lower if a single
 // execution is enough or you want the captured page tighter.
-const recordCap = ref<number>(100);
-const retentionMinutes = ref<number>(5);
+const recordCap = ref<number>(RECORD_CAP_MAX);
+const retentionMinutes = ref<number>(DEFAULT_RETENTION_MINUTES);
 
 /** Deep-link from a MAL rule card / catalog entry — `?catalog=&name=`
  *  pre-selects the file. Optional `?ruleName=` pre-fills the metric
@@ -219,7 +224,7 @@ async function startSampling(): Promise<void> {
     name: rule.name,
     ruleName: selectedMetric.value,
     recordCap: recordCap.value,
-    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionMillis: retentionMinutes.value * MS_PER_MINUTE,
   });
 }
 
@@ -268,7 +273,7 @@ function loadHistorical(entry: HistoryEntry): void {
   selectedMetric.value = entry.ruleName;
   if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
   if (entry.retentionMillis !== undefined) {
-    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / MS_PER_MINUTE));
   }
   // Reset transient view state so the historical capture lands clean.
   selectedRow.value = null;
@@ -325,7 +330,7 @@ function persistCapture(): void {
     name: rule.name,
     ruleName: selectedMetric.value,
     recordCap: recordCap.value,
-    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionMillis: retentionMinutes.value * MS_PER_MINUTE,
     retentionDeadline: dbg.retentionDeadline.value ?? undefined,
     recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
     nodeCount: sess.nodes.length,
@@ -354,7 +359,7 @@ watch(
     selectedMetric.value = entry.ruleName;
     if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
     if (entry.retentionMillis !== undefined) {
-      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / MS_PER_MINUTE));
     }
     dbg.resume(id, entry.retentionDeadline ?? null);
   },
@@ -686,7 +691,7 @@ function formatOutputValue(v: number | string | Record<string, number>): string 
       </div>
       <div class="ctl">
         <label class="ctl__lbl">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="100" class="ctl__input" />
+        <input v-model.number="recordCap" type="number" min="1" :max="RECORD_CAP_MAX" class="ctl__input" />
       </div>
       <div class="ctl">
         <label class="ctl__lbl">retention (min)</label>

@@ -72,8 +72,9 @@ textarea:focus {
 
 /* Per-DSL syntax highlighting (token classes emitted by
  * `views/syntaxHighlight.ts`). Lives in global.css because the
- * tokens render inside `<style scoped>` panes (OalCatalog,
- * DebugSourcePane); component-scoped styles can't reach them. */
+ * tokens render inside `<style scoped>` panes (OalCatalog and
+ * any future read-only viewer); component-scoped styles can't
+ * reach class names emitted from a helper module. */
 .hl {
   font-family: inherit;
 }

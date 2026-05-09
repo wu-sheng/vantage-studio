@@ -125,33 +125,79 @@ matches captures to rule content via this hash.
 
 ## Live debugger (MAL · LAL · OAL)
 
-The **Live debugger** page lets operators sample the actual data
-flowing through a rule's DSL pipeline on demand. Pick a rule, hit
-**Start sampling**, watch the per-stage capture render live as the
-window fills. The session auto-stops when its byte cap fires, its
-record cap fires, or the capture window elapses (default 60 s);
-operators can also stop manually.
+The **Live debugger** page (under **Live debugger** in the left
+nav) lets operators sample the actual data flowing through a rule's
+DSL pipeline on demand. Pick a rule, hit **start sampling**, watch
+records arrive live as polls land. The session auto-stops when the
+record cap fires (default + hard cap **100** per
+`SessionLimits.MAX_RECORD_CAP`) or the retention window elapses
+(default 5 min, hard cap 1 hour); operators can also stop manually.
 
-Three views, one per DSL:
+Three views, one per DSL — the wire emits unified samples (`input |
+filter | function | aggregation | output`) and each view shapes them
+to fit the DSL's mental model:
 
-- **MAL** waterfall — 8 stages from `filter` (file-level) through
-  `meter_emit`. Each row pairs the verbatim DSL fragment
-  (`sourceText`) with the stage's result snapshot.
-- **LAL** records-as-columns × blocks-as-rows grid. The 5 fixed
-  blocks (`text` / `parser` / `extractor` / `sink` / `output_record`)
-  plus `output_metric` populate the rows. A **granularity** toggle
-  switches between block-level (default) and statement-level capture
-  for stepping through every DSL line in the extractor.
-- **OAL** waterfall — 5 clauses (`source` / `filter[i]` /
-  `build_metrics` / `aggregation` / `emit`). The `build_metrics` and
-  `emit` rows render with an `(implicit)` badge — they're compiler-
-  emitted boundaries, not user-written.
+- **MAL** — per-record card with a rule-meta strip (`metric` /
+  `filter` / `exp` / `suffix`) and a 3-column stage grid
+  (`label · rail · rows-table`) per step. The right pane lists every
+  `MalSampleRow` as `name | labels | value` (capped at 50 rows;
+  empty families render verbatim). Click a step to highlight the
+  matching expression `<mark>`'d in the rule strip above. The output
+  meter renders only what the wire serialises today: `metric`,
+  `function`, `value` (when present — scalar `number`,
+  `string` for non-finite, or `Record<string, number>` for
+  histogram-percentile / `*Labeled`), and `timeBucket`. The entity
+  is shown in a separate card with null-field collapse + `show all`
+  toggle.
+- **LAL** — per-record × per-block matrix. Records are columns,
+  block samples are rows. In statement-mode the function row splits
+  per `sourceLine` and the row label carries the verbatim DSL slice
+  (`tag stage: 'extractor'` …); block-mode collapses to one row
+  labelled `extractor`. A **search** field filters records whose log
+  body / content / tags contain the substring; a **show first** cap
+  (default 20, max 100) keeps the grid scannable when the recorder
+  hits 100. A foldable side pane on the left renders the captured
+  rule body line-by-line — each line with a matching `function`
+  sample carries a `▶` jump-to-row hook (red ▶ for the block-mode
+  extractor anchor). Click a record's `⤢` to expand it to a
+  full-width single-record view; `← matrix` returns.
+- **OAL** — per-record card with a 3-column stage grid like MAL.
+  The right pane renders every primitive field of the OAL source /
+  metric payload as `key=value`, with the IDManager `entityId` /
+  `entity_id` (and metric `id` = `<timeBucket>_<entityId>`)
+  annotated with their decoded forms next to the raw value. The
+  decoder is at [`apps/ui/src/views/debug/oalEntityId.ts`](../apps/ui/src/views/debug/oalEntityId.ts);
+  it mirrors OAP's `IDManager` + `Layer` mapping so `Y2hlY2tvdXQ=.1`
+  reads as `(checkout · real)`, a Service-Relation id reads as
+  `(checkout (real) → catalog (real))`, and so on.
 
 Per-cluster coverage shows up as a strip above the capture: each
-peer's contribution (`ok` / `install_failed` / `timeout`). Captures
-during a hot-update show side-by-side YAML for each `contentHash`
-the session encountered, so operators see exactly which rule
-content emitted which record.
+peer's install ack (`installed` / `already_installed` / `failed` /
+`timeout`). Captures during a hot-update keep the rule's
+`contentHash` on every record, so the matrix preserves which rule
+content emitted which row.
+
+### Capture history (browser-local)
+
+Every session's wire payloads are auto-mirrored into browser
+`localStorage` (key `vs:debug-history:v1`) on each poll, so closing
+the tab or losing the connection doesn't lose the capture. The
+**Capture history** page (sibling nav entry) lists every entry
+across all three DSLs with a filter chip-row:
+
+- **Active** entries (retention deadline still in the future) carry
+  a `live` badge and a 1 Hz countdown; **resume →** routes to
+  `/debug/{widget}?resumeSessionId=<sessionId>` which reattaches
+  polling without re-allocating a session on OAP.
+- **Completed** entries (deadline passed or operator stopped)
+  route via `/debug/{widget}?historyId=<entryId>` for read-only
+  replay — the per-DSL view renders the captured snapshot exactly
+  as it was, with an amber "viewing saved capture" banner and a
+  back-to-live button.
+
+Storage is capped per-widget at 20 entries (oldest dropped on
+overflow / quota error). Nothing leaves the browser; history is
+local-only and operator-isolated.
 
 The **Cluster status** page surfaces a per-node DSL-debugging health
 strip: whether bytecode probes are injected, how many sessions are

@@ -46,6 +46,11 @@ import {
   decodeMetricEntityId,
   decodeMetricId,
 } from './oalEntityId.js';
+import {
+  DEFAULT_RETENTION_MINUTES,
+  MS_PER_MINUTE,
+  RECORD_CAP_MAX,
+} from './constants.js';
 
 const route = useRoute();
 const dbg = useDebugSession('oal');
@@ -60,8 +65,8 @@ const selectedMetric = ref<string>('');
 // SessionLimits.MAX_RECORD_CAP on the OAP side is 100 (and so is the
 // default). The input is bounded the same way; lower if a single
 // execution is enough or you want the captured page tighter.
-const recordCap = ref<number>(100);
-const retentionMinutes = ref<number>(5);
+const recordCap = ref<number>(RECORD_CAP_MAX);
+const retentionMinutes = ref<number>(DEFAULT_RETENTION_MINUTES);
 
 /** Deep-link from the OAL file viewer: `?file=<f>&ruleName=<metric>`
  *  pre-fills the picker so a one-click jump from a rule line lands
@@ -107,7 +112,7 @@ async function startSampling(): Promise<void> {
     name: selectedFile.value,
     ruleName: selectedMetric.value,
     recordCap: recordCap.value,
-    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionMillis: retentionMinutes.value * MS_PER_MINUTE,
   });
 }
 
@@ -141,7 +146,7 @@ function loadHistorical(entry: HistoryEntry): void {
   selectedMetric.value = entry.ruleName;
   if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
   if (entry.retentionMillis !== undefined) {
-    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / MS_PER_MINUTE));
   }
 }
 
@@ -172,7 +177,7 @@ function persistCapture(): void {
     name: selectedFile.value,
     ruleName: selectedMetric.value,
     recordCap: recordCap.value,
-    retentionMillis: retentionMinutes.value * 60 * 1000,
+    retentionMillis: retentionMinutes.value * MS_PER_MINUTE,
     retentionDeadline: dbg.retentionDeadline.value ?? undefined,
     recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
     nodeCount: sess.nodes.length,
@@ -196,7 +201,7 @@ watch(
     selectedMetric.value = entry.ruleName;
     if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
     if (entry.retentionMillis !== undefined) {
-      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+      retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / MS_PER_MINUTE));
     }
     dbg.resume(id, entry.retentionDeadline ?? null);
   },
@@ -424,7 +429,7 @@ const allFolded = computed<boolean>(
       </div>
       <div class="ctl">
         <label class="ctl__lbl">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="100" class="ctl__input" />
+        <input v-model.number="recordCap" type="number" min="1" :max="RECORD_CAP_MAX" class="ctl__input" />
       </div>
       <div class="ctl">
         <label class="ctl__lbl">retention (min)</label>
@@ -658,47 +663,6 @@ const allFolded = computed<boolean>(
   color: var(--rr-err, #f44);
   font-size: 15.5px;
   margin: 0;
-}
-
-.oal__sourcecard {
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.oal__sourcecard header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.oal__sourcekey {
-  font-family: var(--rr-font-mono);
-  color: var(--rr-heading);
-  font-size: 16px;
-}
-
-.oal__dispatcher {
-  font-family: var(--rr-font-mono);
-  font-size: 14.5px;
-  color: var(--rr-dim);
-}
-
-.oal__metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.oal__metric {
-  font-family: var(--rr-font-mono);
-  font-size: 14.5px;
-  color: var(--rr-ink2);
-  padding: 1px 6px;
-  background: var(--rr-bg);
 }
 
 .oal__empty {
@@ -942,47 +906,6 @@ const allFolded = computed<boolean>(
   color: var(--rr-dim);
   font-size: 12px;
   margin-left: 4px;
-}
-
-.oal__sourcefallback {
-  display: flex;
-  flex-direction: column;
-  background: var(--rr-bg2);
-  border: 1px solid var(--rr-border);
-  padding: 12px 14px;
-  font-size: 15.5px;
-  color: var(--rr-ink2);
-  flex: 1 1 auto;
-}
-
-.oal__sourcefallback-h {
-  font-family: var(--rr-font-mono);
-  font-size: 13px;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: var(--rr-dim);
-  margin-bottom: 8px;
-}
-
-.oal__sourcefallback p {
-  margin: 0 0 8px;
-}
-
-.oal__sourcefallback code {
-  font-family: var(--rr-font-mono);
-  background: var(--rr-bg);
-  padding: 1px 4px;
-  color: var(--rr-ink);
-}
-
-.oal__sourcefallback-link {
-  color: var(--rr-active);
-  text-decoration: underline;
-}
-
-.oal__sourcefallback-hint {
-  color: var(--rr-dim);
-  font-style: italic;
 }
 
 .oal__histbanner {

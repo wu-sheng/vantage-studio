@@ -37,6 +37,8 @@ export {
   DEBUG_CATALOGS,
   GRANULARITIES,
   SAMPLE_TYPES,
+  MAX_RECORD_CAP,
+  MAX_RETENTION_MILLIS,
   isDebugCatalog,
   isGranularity,
   type DslDebuggingClientOptions,

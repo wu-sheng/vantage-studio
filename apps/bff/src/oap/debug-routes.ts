@@ -32,6 +32,7 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
+  MAX_RECORD_CAP,
   RuntimeRuleApiError,
   isDebugCatalog,
   isGranularity,
@@ -289,10 +290,7 @@ function parseStartArgs(raw: unknown, reply: FastifyReply): StartSessionArgs | n
       typeof b.recordCap !== 'number' ||
       !Number.isFinite(b.recordCap) ||
       b.recordCap <= 0 ||
-      // Mirror OAP's SessionLimits.MAX_RECORD_CAP (100). Reject here so
-      // operators see a 400 from the BFF instead of an OAP round-trip
-      // returning `invalid_limits`.
-      b.recordCap > 100
+      b.recordCap > MAX_RECORD_CAP
     ) {
       reply.code(400).send({ error: 'invalid_recordCap' });
       return null;
