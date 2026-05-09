@@ -624,18 +624,6 @@ function toggleEntity(row: MalSampleRow): void {
   expandedEntities.value = next;
 }
 
-/** OAP doesn't serialise the materialised value on the output payload
- *  (`MALDebugRecorderImpl.meterEmitPayload` emits only metric / entity /
- *  valueType / timeBucket — the `AcceptableValue` is intentionally
- *  dropped). The actual number lives on the upstream sample family
- *  (`row.before.samples`), so we surface it back here. Multi-row
- *  families render every label-tuple's value; a single-row family
- *  drops to just the scalar. */
-function outputValueRows(row: MalSampleRow): FlatRow[] {
-  if (!row.output) return [];
-  if (!row.before?.samples) return [];
-  return flattenRows(row.before.samples);
-}
 </script>
 
 <template>
@@ -831,28 +819,16 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
               </div>
               <div class="mal__stageright" :class="{ 'mal__stageright--selected': selectedRow === row }">
                 <template v-if="row.output">
+                  <!-- Output payload renders verbatim: metric, function,
+                       timeBucket, and the entity. OAP intentionally
+                       omits the materialised value here (see
+                       `MALDebugRecorderImpl.meterEmitPayload`); the
+                       previous function's samples table — visible on
+                       its own row above — shows the value that fed
+                       into the emit. -->
                   <div class="mal__meter">
                     <div><span class="mal__mlbl">metric</span><span class="mal__mval">{{ row.output.metric }}</span></div>
                     <div><span class="mal__mlbl">function</span><span class="mal__mval">{{ row.output.valueType }}</span></div>
-                    <div v-if="outputValueRows(row).length === 1">
-                      <span class="mal__mlbl">value</span>
-                      <span class="mal__mval mal__mvalnum">{{ outputValueRows(row)[0]!.value }}</span>
-                    </div>
-                    <div v-else-if="outputValueRows(row).length > 1">
-                      <span class="mal__mlbl">values</span>
-                      <span class="mal__mval">
-                        <div
-                          v-for="(r, vi) in outputValueRows(row)"
-                          :key="vi"
-                          class="mal__mvline"
-                        >
-                          <span class="mal__mvalnum">{{ r.value }}</span>
-                          <span class="mal__dim">
-                            ({{ Object.entries(r.labels).map(([k, v]) => `${k}=${v}`).join(', ') || 'no labels' }})
-                          </span>
-                        </div>
-                      </span>
-                    </div>
                     <div><span class="mal__mlbl">timeBucket</span><span class="mal__mval">{{ row.output.timeBucket }}</span></div>
                   </div>
                   <div class="mal__entity">
@@ -1416,16 +1392,6 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
   padding: 0;
 }
 
-.mal__mvalnum {
-  color: var(--rr-accent, var(--rr-active));
-  font-weight: 600;
-}
-
-.mal__mvline {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
 
 .mal__entity {
   margin-top: 8px;
