@@ -16,82 +16,36 @@
 
 /**
  * Mirrors `org.apache.skywalking.oap.server.core.analysis.IDManager`'s
- * encoding rules so the OAL debug payload's raw entityId (`base64(name)
- * + "." + layerOrdinal` and friends) can be rendered with a
- * decoded-name annotation next to it. Per-scope formats — see
- * IDManager.java + Layer.java in the OAP repo:
+ * encoding rules so the OAL debug payload's raw `entityId` (and the
+ * metric row's `id`) can be rendered with a decoded annotation next
+ * to it.
  *
- *   Service             base64(name).layerOrdinal
+ * Per-scope formats — see IDManager.java:
+ *
+ *   Service             base64(name).<isNormal>          (isNormal ∈ {0,1})
  *   ServiceInstance     <serviceId>_base64(name)
  *   Endpoint            <serviceId>_base64(name)
  *   ServiceRelation     <srcSvcId>-<dstSvcId>
  *   ServiceInstanceRel  <srcInstId>-<dstInstId>
- *   EndpointRelation    <srcSvcId>-base64(srcEndpoint)-<dstSvcId>-base64(dstEndpoint)
+ *   EndpointRelation    <srcSvcId>-base64(srcEp)-<dstSvcId>-base64(dstEp)
  *
- * The shape alone isn't fully unambiguous (instance and endpoint share
- * the same `_`-joined layout), so the OAL source class — passed via
- * the payload's `type` field — is what tells us which scope to apply.
+ * The trailing digit on a Service id is the boolean `isNormal` flag —
+ * `1` for real (agent-instrumented / user-defined), `0` for virtual
+ * (synthesised, e.g. virtual-database / virtual-mq peers). NOT the
+ * layer ordinal — the layer lives elsewhere on the source object.
  *
- * Decoding is best-effort: any malformed input falls back to `null`,
- * the caller renders the raw id without an annotation.
+ * Metric storage `id` is `<timeBucket>_<entityId>` per
+ * `StorageID.build()` (joined by `Const.ID_CONNECTOR = "_"`). The
+ * first segment is a numeric bucket (`yyyyMMddHHmm` / `yyyyMMddHH` /
+ * `yyyyMMdd` depending on downsampling).
+ *
+ * The shape alone isn't fully unambiguous (instance and endpoint
+ * share the same `_`-joined layout), so the source class — passed
+ * via the payload's `type` field — is what selects the right
+ * per-scope decoder. Decoding is best-effort: any malformed input
+ * falls back to `null` and the caller renders the raw id without an
+ * annotation.
  */
-
-const LAYERS: Record<number, string> = {
-  0: 'UNDEFINED',
-  1: 'MESH',
-  2: 'GENERAL',
-  3: 'OS_LINUX',
-  4: 'K8S',
-  5: 'FAAS',
-  6: 'MESH_CP',
-  7: 'MESH_DP',
-  8: 'DATABASE',
-  9: 'CACHE',
-  10: 'BROWSER',
-  11: 'SO11Y_OAP',
-  12: 'SO11Y_SATELLITE',
-  13: 'MQ',
-  14: 'VIRTUAL_DATABASE',
-  15: 'VIRTUAL_MQ',
-  16: 'VIRTUAL_GATEWAY',
-  17: 'K8S_SERVICE',
-  18: 'MYSQL',
-  19: 'VIRTUAL_CACHE',
-  20: 'POSTGRESQL',
-  21: 'APISIX',
-  22: 'AWS_EKS',
-  23: 'OS_WINDOWS',
-  24: 'AWS_S3',
-  25: 'AWS_DYNAMODB',
-  26: 'AWS_GATEWAY',
-  27: 'REDIS',
-  28: 'ELASTICSEARCH',
-  29: 'RABBITMQ',
-  30: 'MONGODB',
-  31: 'KAFKA',
-  32: 'PULSAR',
-  33: 'BOOKKEEPER',
-  34: 'NGINX',
-  35: 'ROCKETMQ',
-  36: 'CLICKHOUSE',
-  37: 'ACTIVEMQ',
-  38: 'CILIUM_SERVICE',
-  39: 'SO11Y_JAVA_AGENT',
-  40: 'KONG',
-  41: 'SO11Y_GO_AGENT',
-  42: 'FLINK',
-  43: 'BANYANDB',
-  44: 'GENAI',
-  45: 'VIRTUAL_GENAI',
-  46: 'ENVOY_AI_GATEWAY',
-  47: 'IOS',
-  48: 'WECHAT_MINI_PROGRAM',
-  49: 'ALIPAY_MINI_PROGRAM',
-};
-
-function layerName(ord: number): string {
-  return LAYERS[ord] ?? `layer-${ord}`;
-}
 
 /** UTF-8 base64 → string. Uses the browser's native `atob` and
  *  reconstructs UTF-8 via `TextDecoder` so non-ASCII names survive
@@ -108,22 +62,29 @@ function fromBase64(s: string): string | null {
 
 interface ServiceParts {
   name: string;
-  layer: string;
+  /** OAP's `isNormal` flag — `true` for real services, `false` for
+   *  synthesised peers (virtual database, virtual cache, etc.). */
+  real: boolean;
 }
 
-/** Service id = base64(name).layerOrdinal — exactly one dot. */
+/** Service id = base64(name).<0|1> — the trailing digit is the
+ *  isNormal boolean. Anything else returns null. */
 function decodeService(id: string): ServiceParts | null {
   const dot = id.lastIndexOf('.');
   if (dot < 0) return null;
   const name = fromBase64(id.slice(0, dot));
-  const ord = Number(id.slice(dot + 1));
-  if (name === null || !Number.isFinite(ord)) return null;
-  return { name, layer: layerName(ord) };
+  const flag = id.slice(dot + 1);
+  if (name === null || (flag !== '0' && flag !== '1')) return null;
+  return { name, real: flag === '1' };
+}
+
+function realLabel(p: ServiceParts): string {
+  return p.real ? 'real' : 'virtual';
 }
 
 /** ServiceInstance / Endpoint id = <serviceId>_base64(name). The
- *  serviceId itself contains a dot, so we split on the LAST `_` to
- *  get the trailing base64 leaf. */
+ *  serviceId itself contains a dot (the isNormal flag), so we split
+ *  on the LAST `_` to get the trailing base64 leaf. */
 function decodeChildOfService(id: string): { service: ServiceParts; leaf: string } | null {
   const us = id.lastIndexOf('_');
   if (us < 0) return null;
@@ -134,23 +95,19 @@ function decodeChildOfService(id: string): { service: ServiceParts; leaf: string
   return { service: svc, leaf };
 }
 
-/** Public decoder. The OAL payload's `type` field discriminates the
- *  scope; without a hint we return null. Returns a short
- *  human-readable annotation suitable for inline display. */
+/** Public decoder for `entityId`. The OAL payload's `type` field
+ *  discriminates the scope; without a hint we return null. */
 export function decodeEntityId(type: string | undefined, id: string): string | null {
   if (!type || !id) return null;
   switch (type) {
     case 'Service': {
       const s = decodeService(id);
-      return s ? `${s.name} · ${s.layer}` : null;
+      return s ? `${s.name} · ${realLabel(s)}` : null;
     }
-    case 'ServiceInstance': {
-      const r = decodeChildOfService(id);
-      return r ? `${r.service.name} → ${r.leaf} · ${r.service.layer}` : null;
-    }
+    case 'ServiceInstance':
     case 'Endpoint': {
       const r = decodeChildOfService(id);
-      return r ? `${r.service.name} → ${r.leaf} · ${r.service.layer}` : null;
+      return r ? `${r.service.name} → ${r.leaf} · ${realLabel(r.service)}` : null;
     }
     case 'ServiceRelation': {
       const dash = id.indexOf('-');
@@ -158,7 +115,7 @@ export function decodeEntityId(type: string | undefined, id: string): string | n
       const src = decodeService(id.slice(0, dash));
       const dst = decodeService(id.slice(dash + 1));
       if (!src || !dst) return null;
-      return `${src.name} (${src.layer}) → ${dst.name} (${dst.layer})`;
+      return `${src.name} (${realLabel(src)}) → ${dst.name} (${realLabel(dst)})`;
     }
     case 'ServiceInstanceRelation': {
       const dash = id.indexOf('-');
@@ -169,7 +126,7 @@ export function decodeEntityId(type: string | undefined, id: string): string | n
       return `${src.service.name}/${src.leaf} → ${dst.service.name}/${dst.leaf}`;
     }
     case 'EndpointRelation': {
-      // 4 segments: srcSvcId - base64(srcEp) - dstSvcId - base64(dstEp).
+      // 4 dash-joined segments: srcSvcId - base64(srcEp) - dstSvcId - base64(dstEp).
       // Service ids contain `.` but no `-`, so a 3-dash split is safe.
       const parts = id.split('-');
       if (parts.length !== 4) return null;
@@ -183,4 +140,53 @@ export function decodeEntityId(type: string | undefined, id: string): string | n
     default:
       return null;
   }
+}
+
+/** Format a numeric time bucket (yyyyMMddHHmm / yyyyMMddHH /
+ *  yyyyMMdd) as `YYYY-MM-DD HH:MM` / `YYYY-MM-DD HH` / `YYYY-MM-DD`.
+ *  Returns the raw string when the bucket isn't one of the three
+ *  fixed widths. */
+function formatTimeBucket(bucket: string): string {
+  if (!/^\d+$/.test(bucket)) return bucket;
+  if (bucket.length === 12) {
+    return `${bucket.slice(0, 4)}-${bucket.slice(4, 6)}-${bucket.slice(6, 8)} ${bucket.slice(8, 10)}:${bucket.slice(10, 12)}`;
+  }
+  if (bucket.length === 10) {
+    return `${bucket.slice(0, 4)}-${bucket.slice(4, 6)}-${bucket.slice(6, 8)} ${bucket.slice(8, 10)}`;
+  }
+  if (bucket.length === 8) {
+    return `${bucket.slice(0, 4)}-${bucket.slice(4, 6)}-${bucket.slice(6, 8)}`;
+  }
+  return bucket;
+}
+
+/** Heuristic: the metric class's `type` field ("Service…", "Endpoint…",
+ *  …) tells us which entity-id scope its `id` row joins onto. Order
+ *  matters — most specific first (EndpointRelation must beat
+ *  Endpoint, ServiceInstanceRelation must beat ServiceInstance). */
+function metricScopeOf(type: string): string | null {
+  if (type.startsWith('EndpointRelation')) return 'EndpointRelation';
+  if (type.startsWith('ServiceInstanceRelation')) return 'ServiceInstanceRelation';
+  if (type.startsWith('ServiceRelation')) return 'ServiceRelation';
+  if (type.startsWith('ServiceInstance')) return 'ServiceInstance';
+  if (type.startsWith('Endpoint')) return 'Endpoint';
+  if (type.startsWith('Service')) return 'Service';
+  return null;
+}
+
+/** Decode an OAL metric storage `id` (`<timeBucket>_<entityId>`).
+ *  Returns the formatted bucket plus the decoded entityId when both
+ *  parse cleanly, the bucket alone when entityId decoding fails, or
+ *  null when the bucket itself doesn't look numeric. */
+export function decodeMetricId(type: string | undefined, id: string): string | null {
+  if (!id) return null;
+  const us = id.indexOf('_');
+  if (us < 0) return null;
+  const bucket = id.slice(0, us);
+  if (!/^\d+$/.test(bucket)) return null;
+  const formatted = formatTimeBucket(bucket);
+  const entityRaw = id.slice(us + 1);
+  const scope = type ? metricScopeOf(type) : null;
+  const decoded = scope ? decodeEntityId(scope, entityRaw) : null;
+  return decoded ? `${formatted} · ${decoded}` : formatted;
 }
