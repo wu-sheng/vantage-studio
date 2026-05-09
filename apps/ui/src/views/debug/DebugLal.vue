@@ -530,21 +530,111 @@ function recordMatches(rec: SessionRecord, q: string): boolean {
   return false;
 }
 
-/** Per-node post-filter view. Keeps the cells map intact (lookups
- *  are by recIdx and the surviving recordViews carry their original
- *  ids), trims `recordViews` to matching + capped subset. */
-function displayedRecords(view: LalNodeView): LalRecordView[] {
+/** Memoized per-node post-filter view. Computed once per
+ *  (recordViews, search, limit) tuple so the template's many
+ *  references (header row, every step row, count badges) all share
+ *  the same array reference — Vue's reconciliation then keeps the
+ *  sticky leftmost column DOM nodes stable across polls instead of
+ *  thrashing them on every reactive tick at high record counts. */
+interface DisplayedShape {
+  records: LalRecordView[];
+  matched: number;
+  total: number;
+}
+
+const displayedByNode = computed<Map<string, DisplayedShape>>(() => {
   const q = searchQuery.value.trim();
-  const matched = q === ''
-    ? view.recordViews
-    : view.recordViews.filter((rv) => recordMatches(rv.rec, q));
-  return matched.slice(0, displayLimit.value);
+  const limit = displayLimit.value;
+  const map = new Map<string, DisplayedShape>();
+  for (const view of nodeViews.value) {
+    const total = view.recordViews.length;
+    const matched =
+      q === ''
+        ? view.recordViews
+        : view.recordViews.filter((rv) => recordMatches(rv.rec, q));
+    map.set(nodeKey(view), {
+      records: matched.slice(0, limit),
+      matched: matched.length,
+      total,
+    });
+  }
+  return map;
+});
+
+function displayedRecords(view: LalNodeView): LalRecordView[] {
+  return displayedByNode.value.get(nodeKey(view))?.records ?? [];
 }
 
 function matchedRecordCount(view: LalNodeView): number {
-  const q = searchQuery.value.trim();
-  if (q === '') return view.recordViews.length;
-  return view.recordViews.filter((rv) => recordMatches(rv.rec, q)).length;
+  return displayedByNode.value.get(nodeKey(view))?.matched ?? 0;
+}
+
+// ── Optional source panel with per-line hooks ──────────────────────
+
+/** Toggles the verbatim DSL panel next to the matrix. Hidden by
+ *  default — operators usually stare at the cells and only need the
+ *  source for cross-reference when a particular statement is
+ *  surprising. */
+const sourcePanelOpen = ref<boolean>(false);
+
+/** Captured DSL — pulled from the latest displayed record on the
+ *  first node. All records in a session share the same `dsl` (the
+ *  recorder snapshots the rule body once at install time and reuses
+ *  it for every record), so any record's `dsl` works. */
+const sourceDslLines = computed<string[]>(() => {
+  for (const view of nodeViews.value) {
+    const records = view.records ?? [];
+    if (records.length > 0) {
+      const dsl = records[records.length - 1]!.dsl;
+      if (typeof dsl === 'string' && dsl.length > 0) return dsl.split(/\r?\n/);
+    }
+  }
+  return [];
+});
+
+/** Map of 1-based DSL line → step key. Lets the source panel show a
+ *  hook arrow only on lines that actually fired a function probe in
+ *  this capture, and lets the click handler resolve to the right
+ *  step's sticky highlight state. */
+const stepKeyByLine = computed<Map<number, string>>(() => {
+  const map = new Map<number, string>();
+  for (const view of nodeViews.value) {
+    for (const step of view.steps) {
+      if (step.sourceLine > 0) map.set(step.sourceLine, step.key);
+    }
+  }
+  return map;
+});
+
+/** Soft-highlight: when an operator clicks a line in the source
+ *  panel, the corresponding step row in the matrix gets a brief
+ *  outline. We track the highlighted step key and clear it after a
+ *  short delay so the cue is visible without being permanent. */
+const highlightedStepKey = ref<string | null>(null);
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+function jumpToStep(stepKey: string): void {
+  highlightedStepKey.value = stepKey;
+  if (highlightTimer !== null) clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    highlightedStepKey.value = null;
+  }, 1500);
+  // Scroll the matrix's matching step label into view inside the
+  // wrapper. The element id is set on the step row's leading label
+  // cell so this works for both the sticky-pinned column and free-
+  // scrolled positions.
+  if (typeof document === 'undefined') return;
+  const el = document.querySelector<HTMLElement>(`[data-step-key="${cssEscape(stepKey)}"]`);
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  }
+}
+
+function cssEscape(s: string): string {
+  // Minimal escape — step keys are `<type>@<digits>`, no special chars
+  // beyond `@` which is querySelector-safe. Keep this honest in case
+  // the key shape ever broadens.
+  return s.replace(/(["\\\[\]'])/g, '\\$1');
 }
 
 const sourceDsl = computed<string | null>(() => {
@@ -713,6 +803,15 @@ void TAG_STATUS_TONE;
             class="lal__limitinput"
           />
         </label>
+        <button
+          type="button"
+          class="lal__srctogglebtn"
+          :class="{ 'lal__srctogglebtn--on': sourcePanelOpen }"
+          :disabled="sourceDslLines.length === 0"
+          @click="sourcePanelOpen = !sourcePanelOpen"
+        >
+          {{ sourcePanelOpen ? 'hide source' : 'show source' }}
+        </button>
       </div>
     </template>
 
@@ -847,7 +946,33 @@ void TAG_STATUS_TONE;
       </div>
 
       <!-- Default: per-record × per-block matrix. -->
-      <div v-else class="lal__matrixwrap">
+      <div v-else class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
+        <aside
+          v-if="sourcePanelOpen && sourceDslLines.length > 0"
+          class="lal__sourcepane"
+        >
+          <header class="lal__sourceh">captured DSL · click ▶ to jump</header>
+          <ol class="lal__sourcelines">
+            <li
+              v-for="(line, li) in sourceDslLines"
+              :key="li"
+              class="lal__sourceline"
+              :class="{ 'lal__sourceline--linked': stepKeyByLine.get(li + 1) !== undefined }"
+            >
+              <span class="lal__sourcelno">{{ li + 1 }}</span>
+              <button
+                v-if="stepKeyByLine.get(li + 1)"
+                type="button"
+                class="lal__sourcehook"
+                title="jump to this step in the matrix"
+                @click="jumpToStep(stepKeyByLine.get(li + 1)!)"
+              >▶</button>
+              <span v-else class="lal__sourcehookbox" />
+              <code class="lal__sourcetext">{{ line || ' ' }}</code>
+            </li>
+          </ol>
+        </aside>
+        <div class="lal__matrixwrap">
         <div
           v-if="displayedRecords(node).length === 0"
           class="lal__nomatch"
@@ -897,7 +1022,11 @@ void TAG_STATUS_TONE;
 
           <!-- step rows -->
           <template v-for="step in node.steps" :key="step.key">
-            <div class="lal__steplbl">
+            <div
+              class="lal__steplbl"
+              :class="{ 'lal__steplbl--flash': highlightedStepKey === step.key }"
+              :data-step-key="step.key"
+            >
               <div class="lal__stepkind">{{ step.kindLabel }}</div>
               <div v-if="step.nameLabel" class="lal__stepname">
                 <code>{{ step.nameLabel }}</code>
@@ -989,6 +1118,7 @@ void TAG_STATUS_TONE;
             </div>
           </template>
         </div>
+        </div>
       </div>
     </template>
   </DebugView>
@@ -1063,6 +1193,17 @@ void TAG_STATUS_TONE;
   font-style: italic;
 }
 
+.lal__matrixrow {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.lal__matrixrow .lal__matrixwrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .lal__matrixwrap {
   overflow: auto;
   border: 1px solid var(--rr-border);
@@ -1073,6 +1214,120 @@ void TAG_STATUS_TONE;
      the rest of the matrix instead of pinning). */
   max-height: calc(100vh - 280px);
   min-height: 200px;
+}
+
+.lal__sourcepane {
+  flex: 0 0 360px;
+  min-width: 0;
+  max-height: calc(100vh - 280px);
+  overflow: auto;
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.lal__sourceh {
+  position: sticky;
+  top: 0;
+  background: var(--rr-bg2);
+  border-bottom: 1px solid var(--rr-border);
+  padding: 6px 10px;
+  font-family: var(--rr-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+  z-index: 1;
+}
+
+.lal__sourcelines {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.lal__sourceline {
+  display: grid;
+  grid-template-columns: 36px 18px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  padding: 1px 10px 1px 0;
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lal__sourceline--linked:hover {
+  background: var(--rr-bg2);
+}
+
+.lal__sourcelno {
+  text-align: right;
+  color: var(--rr-dim);
+  font-size: 10.5px;
+}
+
+.lal__sourcehook {
+  background: transparent;
+  border: 0;
+  color: var(--rr-accent, var(--rr-active));
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  width: 18px;
+  text-align: center;
+}
+
+.lal__sourcehook:hover {
+  color: var(--rr-heading);
+}
+
+.lal__sourcehookbox {
+  display: inline-block;
+  width: 18px;
+}
+
+.lal__sourcetext {
+  color: var(--rr-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lal__steplbl--flash {
+  outline: 2px solid var(--rr-accent, var(--rr-active));
+  outline-offset: -2px;
+  transition: outline-color 0.4s ease;
+}
+
+.lal__srctogglebtn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.lal__srctogglebtn:hover:not(:disabled) {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
+}
+
+.lal__srctogglebtn--on {
+  color: var(--rr-heading);
+  border-color: var(--rr-accent, var(--rr-active));
+}
+
+.lal__srctogglebtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .lal__matrix {
