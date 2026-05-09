@@ -45,17 +45,12 @@ const sections: NavSection[] = [
     ],
   },
   {
-    kicker: 'catalogs',
+    kicker: 'DSL Management',
     links: [
       {
         label: 'MAL · OTEL',
         to: '/catalog/otel-rules',
         active: (p) => p.startsWith('/catalog/otel-rules'),
-      },
-      {
-        label: 'MAL · Log',
-        to: '/catalog/log-mal-rules',
-        active: (p) => p.startsWith('/catalog/log-mal-rules'),
       },
       {
         label: 'MAL · Telegraf',
@@ -66,6 +61,14 @@ const sections: NavSection[] = [
         label: 'LAL',
         to: '/catalog/lal',
         active: (p) => p.startsWith('/catalog/lal'),
+      },
+      /* `log-mal-rules` is MAL applied to LAL-derived logs — placed
+       * below LAL so the data-flow direction (LAL → MAL) reads
+       * naturally as the eye scans the sidebar. */
+      {
+        label: 'LAL → MAL',
+        to: '/catalog/log-mal-rules',
+        active: (p) => p.startsWith('/catalog/log-mal-rules'),
       },
       {
         label: 'OAL · read-only',
