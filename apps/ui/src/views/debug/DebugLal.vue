@@ -974,25 +974,34 @@ void TAG_STATUS_TONE;
 
       <!-- Default: per-record × per-block matrix. -->
       <div v-else class="lal__matrixblock">
-        <header class="lal__matrixhead">
+        <div class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
+        <aside
+          v-if="!sourcePanelOpen && sourceDslLines.length > 0"
+          class="lal__sourcestub"
+        >
           <button
             type="button"
             class="lal__srctogglebtn"
-            :class="{ 'lal__srctogglebtn--on': sourcePanelOpen }"
-            :disabled="sourceDslLines.length === 0"
-            :title="sourcePanelOpen ? 'fold captured DSL panel' : 'show captured DSL panel'"
-            :aria-label="sourcePanelOpen ? 'fold captured DSL panel' : 'show captured DSL panel'"
-            @click="sourcePanelOpen = !sourcePanelOpen"
-          >
-            <span class="lal__srctogglechev">{{ sourcePanelOpen ? '«' : '»' }}</span>
-          </button>
-        </header>
-        <div class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
+            title="show captured DSL panel"
+            aria-label="show captured DSL panel"
+            @click="sourcePanelOpen = true"
+          ><span class="lal__srctogglechev">»</span></button>
+          <span class="lal__sourcestublabel">DSL</span>
+        </aside>
         <aside
           v-if="sourcePanelOpen && sourceDslLines.length > 0"
           class="lal__sourcepane"
         >
-          <header class="lal__sourceh">captured DSL · click ▶ to jump</header>
+          <header class="lal__sourceh">
+            <button
+              type="button"
+              class="lal__srctogglebtn"
+              title="fold captured DSL panel"
+              aria-label="fold captured DSL panel"
+              @click="sourcePanelOpen = false"
+            ><span class="lal__srctogglechev">«</span></button>
+            <span class="lal__sourcehtitle">captured DSL · click ▶ to jump</span>
+          </header>
           <ol class="lal__sourcelines">
             <li
               v-for="(line, li) in sourceDslLines"
@@ -1252,11 +1261,27 @@ void TAG_STATUS_TONE;
   gap: 6px;
 }
 
-.lal__matrixhead {
+.lal__sourcestub {
+  flex: 0 0 28px;
+  max-height: calc(100vh - 280px);
+  border: 1px solid var(--rr-border);
+  background: var(--rr-bg);
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
   align-items: center;
-  padding: 0 2px;
+  padding: 4px 0;
+  gap: 8px;
+}
+
+.lal__sourcestublabel {
+  font-family: var(--rr-font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  margin-top: 4px;
 }
 
 .lal__matrixrow {
@@ -1298,13 +1323,21 @@ void TAG_STATUS_TONE;
   top: 0;
   background: var(--rr-bg2);
   border-bottom: 1px solid var(--rr-border);
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-family: var(--rr-font-mono);
   font-size: 10.5px;
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--rr-dim);
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lal__sourcehtitle {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .lal__sourcelines {
