@@ -469,22 +469,23 @@ function selectCell(cell: LalCell): void {
  *  per cell — input / function@N / output stacked vertically). The
  *  matrix is dense by design (one column per record), so an operator
  *  drilling into one log line that has long content benefits from
- *  losing the column constraint. Click "← matrix" on the expanded
- *  view to drop back. */
+ *  losing the column constraint. The matrix layout (sticky block-
+ *  label column + captured-DSL pane) stays mounted; we just filter
+ *  `displayedRecords` to a single column. The expand button on the
+ *  record header toggles back to the full matrix. */
 const expandedRecord = ref<{ nodeKey: string; recIdx: number } | null>(null);
 
-function expandRecord(nKey: string, recIdx: number): void {
-  expandedRecord.value = { nodeKey: nKey, recIdx };
-}
-
-function backToMatrix(): void {
-  expandedRecord.value = null;
-}
-
-function expandedRecordView(view: LalNodeView): LalRecordView | null {
+function isRecordExpanded(nKey: string, recIdx: number): boolean {
   const e = expandedRecord.value;
-  if (e === null || e.nodeKey !== nodeKey(view)) return null;
-  return view.recordViews.find((r) => r.recIdx === e.recIdx) ?? null;
+  return e !== null && e.nodeKey === nKey && e.recIdx === recIdx;
+}
+
+function toggleExpandRecord(nKey: string, recIdx: number): void {
+  if (isRecordExpanded(nKey, recIdx)) {
+    expandedRecord.value = null;
+  } else {
+    expandedRecord.value = { nodeKey: nKey, recIdx };
+  }
 }
 
 // ── Search + display limit ────────────────────────────────────────
@@ -544,14 +545,26 @@ interface DisplayedShape {
 const displayedByNode = computed<Map<string, DisplayedShape>>(() => {
   const q = searchQuery.value.trim();
   const limit = displayLimit.value;
+  const ex = expandedRecord.value;
   const map = new Map<string, DisplayedShape>();
   for (const view of nodeViews.value) {
+    const nKey = nodeKey(view);
     const total = view.recordViews.length;
+    // Single-record expand collapses the matrix to one column. The
+    // matrix layout (sticky block-label column + captured-DSL pane)
+    // is reused as-is; only the column count drops.
+    if (ex !== null && ex.nodeKey === nKey) {
+      const rec = view.recordViews.find((r) => r.recIdx === ex.recIdx);
+      if (rec) {
+        map.set(nKey, { records: [rec], matched: 1, total });
+        continue;
+      }
+    }
     const matched =
       q === ''
         ? view.recordViews
         : view.recordViews.filter((rv) => recordMatches(rv.rec, q));
-    map.set(nodeKey(view), {
+    map.set(nKey, {
       records: matched.slice(0, limit),
       matched: matched.length,
       total,
@@ -872,107 +885,10 @@ function recordTitle(view: LalRecordView): string {
             </ol>
           </aside>
 
-          <!-- Right side: either expanded single-record view or matrix. -->
-          <div
-            v-if="expandedRecordView(node) !== null"
-            class="lal__solo"
-          >
-            <header class="lal__soloh">
-          <button type="button" class="lal__solback" @click="backToMatrix">← matrix</button>
-          <span class="lal__solotitle">{{ recordTitle(expandedRecordView(node)!) }}</span>
-        </header>
-        <article
-          v-for="step in node.steps"
-          :key="step.key"
-          class="lal__solorow"
-        >
-          <header class="lal__solorowh">
-            <span class="lal__stepkind">{{ step.kindLabel }}</span>
-            <code v-if="step.nameLabel" class="lal__solorowname">{{ step.nameLabel }}</code>
-          </header>
-          <template v-if="cellAt(node, step, expandedRecordView(node)!.recIdx) === undefined">
-            <div class="lal__cellabsent">— no sample for this step in this record</div>
-          </template>
-          <template v-else>
-            <template v-if="step.type === 'input'">
-              <div class="lal__kvs">
-                <div
-                  v-for="kv in inputEntries(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
-                  :key="kv.k"
-                  class="lal__kv"
-                >
-                  <span class="lal__kvk">{{ kv.k }}</span>
-                  <span class="lal__kvv">{{ kv.v }}</span>
-                </div>
-              </div>
-              <div
-                v-if="inputTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null).length > 0"
-                class="lal__tags"
-              >
-                <span
-                  v-for="(t, ti) in inputTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
-                  :key="ti"
-                  class="lal__tag lal__tag--orig"
-                >{{ t.key }}={{ t.value }}</span>
-              </div>
-              <div
-                v-if="bodyPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
-                class="lal__body"
-              >
-                {{ bodyPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null) }}
-              </div>
-            </template>
-            <template v-else>
-              <div class="lal__kvs">
-                <div
-                  v-for="kv in outputEntries(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
-                  :key="kv.k"
-                  class="lal__kv"
-                >
-                  <span class="lal__kvk">{{ kv.k }}</span>
-                  <span class="lal__kvv">{{ kv.v }}</span>
-                </div>
-              </div>
-              <div
-                v-if="carriedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null).length > 0"
-                class="lal__taggroup"
-              >
-                <span class="lal__tagheader">carried</span>
-                <span
-                  v-for="(t, ti) in carriedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
-                  :key="`o-${ti}`"
-                  class="lal__tag lal__tag--orig"
-                >{{ t.key }}={{ t.value }}</span>
-              </div>
-              <div
-                v-if="addedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null).length > 0"
-                class="lal__taggroup"
-              >
-                <span class="lal__tagheader">+ added</span>
-                <span
-                  v-for="(t, ti) in addedTags(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
-                  :key="`a-${ti}`"
-                  class="lal__tag"
-                  :class="t.status === 'lal-override' ? 'lal__tag--over' : 'lal__tag--add'"
-                >{{ t.key }}={{ t.value }}</span>
-              </div>
-              <div
-                v-if="contentPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null)"
-                class="lal__body"
-              >
-                {{ contentPreview(cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload ?? null) }}
-              </div>
-            </template>
-            <div
-              v-if="cellAt(node, step, expandedRecordView(node)!.recIdx)?.payload?.aborted"
-              class="lal__abort"
-            >aborted</div>
-          </template>
-        </article>
-      </div>
-
-          <!-- Default branch: dense matrix view. -->
-          <div v-else class="lal__matrixwrap">
+          <!-- Single matrix view; expanded mode just filters to one
+               record column so the sticky block-label column AND the
+               captured-DSL pane stay mounted across both modes. -->
+          <div class="lal__matrixwrap">
         <div
           v-if="displayedRecords(node).length === 0"
           class="lal__nomatch"
@@ -1014,9 +930,9 @@ function recordTitle(view: LalRecordView): string {
               <button
                 type="button"
                 class="lal__expandbtn"
-                title="expand this record to full width"
-                @click.stop="expandRecord(nodeKey(node), rv.recIdx)"
-              >⤢</button>
+                :title="isRecordExpanded(nodeKey(node), rv.recIdx) ? 'collapse to full matrix' : 'expand this record to full width'"
+                @click.stop="toggleExpandRecord(nodeKey(node), rv.recIdx)"
+              >{{ isRecordExpanded(nodeKey(node), rv.recIdx) ? '↩' : '⤢' }}</button>
             </div>
           </div>
 
@@ -1519,65 +1435,6 @@ function recordTitle(view: LalRecordView): string {
   border-color: var(--rr-ink2);
 }
 
-.lal__solo {
-  border: 1px solid var(--rr-border);
-  background: var(--rr-bg);
-  display: flex;
-  flex-direction: column;
-}
-
-.lal__soloh {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 10px;
-  background: var(--rr-bg2);
-  border-bottom: 1px solid var(--rr-border);
-}
-
-.lal__solback {
-  background: transparent;
-  border: 1px solid var(--rr-border);
-  color: var(--rr-ink2);
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-
-.lal__solback:hover {
-  color: var(--rr-heading);
-  border-color: var(--rr-ink2);
-}
-
-.lal__solotitle {
-  font-family: var(--rr-font-mono);
-  font-size: 13px;
-  color: var(--rr-heading);
-}
-
-.lal__solorow {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--rr-border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.lal__solorow:last-child {
-  border-bottom: none;
-}
-
-.lal__solorowh {
-  font-family: var(--rr-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color: var(--rr-accent, var(--rr-active));
-}
-
 .lal__steplbl {
   position: sticky;
   left: 0;
@@ -1610,17 +1467,6 @@ function recordTitle(view: LalRecordView): string {
   font-family: var(--rr-font-mono);
   background: transparent;
   padding: 0;
-}
-
-.lal__solorowname {
-  font-family: var(--rr-font-mono);
-  font-size: 12px;
-  color: var(--rr-ink);
-  background: var(--rr-bg2);
-  padding: 1px 6px;
-  margin-left: 8px;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .lal__stepct {
