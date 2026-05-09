@@ -433,6 +433,65 @@ function expandedRecordView(view: LalNodeView): LalRecordView | null {
   return view.recordViews.find((r) => r.recIdx === e.recIdx) ?? null;
 }
 
+// ── Search + display limit ────────────────────────────────────────
+
+/** Free-text filter on log content. A record matches when ANY of its
+ *  samples carry text containing the substring (case-insensitive):
+ *    - input LogData body.text
+ *    - output LogBuilder.content
+ *    - any LogBuilder tag key/value
+ *  Empty query matches everything. */
+const searchQuery = ref<string>('');
+/** UI-side cap so a busy capture doesn't render hundreds of columns
+ *  at once; operators raise this when they want the full set. */
+const displayLimit = ref<number>(20);
+
+function recordMatches(rec: SessionRecord, q: string): boolean {
+  if (q === '') return true;
+  const needle = q.toLowerCase();
+  for (const sample of rec.samples ?? []) {
+    if (!isLalSamplePayload(sample.payload)) continue;
+    const p = sample.payload;
+    if (p.input?.type === 'LogData') {
+      const body = (p.input as LalLogDataInput).body;
+      const text = body?.text;
+      if (typeof text === 'string' && text.toLowerCase().includes(needle)) return true;
+    }
+    if (p.output?.type === 'LogBuilder') {
+      const out = p.output as LalLogBuilderOutput;
+      if (typeof out.content === 'string' && out.content.toLowerCase().includes(needle)) {
+        return true;
+      }
+      for (const t of out.tags ?? []) {
+        if (
+          t.key.toLowerCase().includes(needle) ||
+          t.value.toLowerCase().includes(needle)
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** Per-node post-filter view. Keeps the cells map intact (lookups
+ *  are by recIdx and the surviving recordViews carry their original
+ *  ids), trims `recordViews` to matching + capped subset. */
+function displayedRecords(view: LalNodeView): LalRecordView[] {
+  const q = searchQuery.value.trim();
+  const matched = q === ''
+    ? view.recordViews
+    : view.recordViews.filter((rv) => recordMatches(rv.rec, q));
+  return matched.slice(0, displayLimit.value);
+}
+
+function matchedRecordCount(view: LalNodeView): number {
+  const q = searchQuery.value.trim();
+  if (q === '') return view.recordViews.length;
+  return view.recordViews.filter((rv) => recordMatches(rv.rec, q)).length;
+}
+
 const sourceDsl = computed<string | null>(() => {
   const sel = selectedCell.value;
   if (sel) return sel.rec.dsl ?? null;
@@ -578,6 +637,30 @@ void TAG_STATUS_TONE;
       </div>
     </template>
 
+    <template #subhead>
+      <div class="lal__subhead">
+        <label class="lal__searchwrap">
+          <span class="lal__searchlbl">search</span>
+          <input
+            v-model="searchQuery"
+            type="search"
+            class="lal__searchinput"
+            placeholder="filter records by log content / tag…"
+          />
+        </label>
+        <label class="lal__limitwrap">
+          <span class="lal__searchlbl">show first</span>
+          <input
+            v-model.number="displayLimit"
+            type="number"
+            min="1"
+            max="100"
+            class="lal__limitinput"
+          />
+        </label>
+      </div>
+    </template>
+
     <template #idle-hint>
       pick a LAL rule and hit start. each captured log becomes one
       column in the matrix; rows walk the per-record blocks
@@ -692,13 +775,34 @@ void TAG_STATUS_TONE;
       <!-- Default: per-record × per-block matrix. -->
       <div v-else class="lal__matrixwrap">
         <div
+          v-if="displayedRecords(node).length === 0"
+          class="lal__nomatch"
+        >
+          <template v-if="searchQuery.trim() === ''">no records on this node</template>
+          <template v-else>
+            no records match
+            <code>{{ searchQuery }}</code>
+            ({{ node.recordViews.length }} captured total)
+          </template>
+        </div>
+        <div
+          v-else
           class="lal__matrix"
-          :style="`grid-template-columns: 180px repeat(${node.recordViews.length}, minmax(200px, 1fr));`"
+          :style="`grid-template-columns: 180px repeat(${displayedRecords(node).length}, minmax(200px, 1fr));`"
         >
           <!-- header row: blank label cell + record headers -->
-          <div class="lal__hdrlbl">block ▾ / record →</div>
+          <div class="lal__hdrlbl">
+            block ▾ / record →
+            <div class="lal__hdrlblct">
+              showing {{ displayedRecords(node).length }}
+              of {{ matchedRecordCount(node) }}
+              <span v-if="matchedRecordCount(node) !== node.recordViews.length">
+                · {{ node.recordViews.length }} captured
+              </span>
+            </div>
+          </div>
           <div
-            v-for="rv in node.recordViews"
+            v-for="rv in displayedRecords(node)"
             :key="`${nodeKey(node)}-h-${rv.recIdx}`"
             class="lal__hdrec"
             :class="{
@@ -722,14 +826,12 @@ void TAG_STATUS_TONE;
             <div class="lal__steplbl">
               <div class="lal__stepkind">{{ step.label }}</div>
               <div class="lal__stepct">
-                {{
-                  Object.keys(Object.fromEntries([...node.cells.get(step.key)?.entries() ?? []])).length
-                }}
-                / {{ node.recordViews.length }} records
+                {{ displayedRecords(node).filter((rv) => cellAt(node, step, rv.recIdx) !== undefined).length }}
+                / {{ displayedRecords(node).length }} records
               </div>
             </div>
             <div
-              v-for="rv in node.recordViews"
+              v-for="rv in displayedRecords(node)"
               :key="`${step.key}-${rv.recIdx}`"
               class="lal__cell"
               :class="{
@@ -899,6 +1001,73 @@ void TAG_STATUS_TONE;
   font-size: 10px;
   letter-spacing: 1px;
   text-transform: uppercase;
+}
+
+.lal__hdrlblct {
+  margin-top: 4px;
+  font-family: var(--rr-font-mono);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--rr-ink2);
+}
+
+.lal__subhead {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+
+.lal__searchwrap,
+.lal__limitwrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--rr-font-mono);
+}
+
+.lal__searchlbl {
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+}
+
+.lal__searchinput,
+.lal__limitinput {
+  background: var(--rr-bg2);
+  color: var(--rr-ink);
+  border: 1px solid var(--rr-border);
+  padding: 3px 8px;
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+}
+
+.lal__searchinput {
+  min-width: 320px;
+}
+
+.lal__limitinput {
+  width: 60px;
+}
+
+.lal__nomatch {
+  padding: 24px 18px;
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-dim);
+  text-align: center;
+  font-style: italic;
+}
+
+.lal__nomatch code {
+  font-family: var(--rr-font-mono);
+  background: var(--rr-bg2);
+  padding: 1px 5px;
+  font-style: normal;
+  color: var(--rr-ink);
 }
 
 .lal__hdrec {
