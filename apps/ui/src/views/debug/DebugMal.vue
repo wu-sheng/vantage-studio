@@ -1363,7 +1363,7 @@ function formatOutputValue(v: number | string | Record<string, number>): string 
 }
 
 .mal__rtval {
-  text-align: right;
+  text-align: center;
   color: var(--rr-accent, var(--rr-active));
   white-space: nowrap;
   width: 1%;
@@ -1380,7 +1380,7 @@ function formatOutputValue(v: number | string | Record<string, number>): string 
   padding: 5px 8px;
   color: var(--rr-dim);
   font-style: italic;
-  text-align: right;
+  text-align: center;
 }
 
 .mal__hl {
