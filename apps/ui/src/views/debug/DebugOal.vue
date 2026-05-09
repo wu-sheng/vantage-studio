@@ -238,20 +238,39 @@ function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
 }
 
-/** Pull the operator-readable identity from an OAL source payload's
- *  `fields` bag. We surface entityId + the most useful per-source
- *  column (varies by source class) without baking a per-source map.
- *  Every field is `key=value` so a base64 entityId doesn't read as a
- *  bare token next to its labelled siblings. */
-function sourceSummary(p: OalSourcePayload): string {
-  const f = p.fields ?? {};
-  const parts: string[] = [];
-  if (typeof f.entityId === 'string') parts.push(`entityId=${f.entityId}`);
-  for (const k of ['endpoint', 'sourceServiceName', 'destServiceName', 'serviceName']) {
-    const v = f[k];
-    if (typeof v === 'string' && v.length > 0) parts.push(`${k}=${v}`);
+interface OalKv {
+  k: string;
+  v: string;
+}
+
+/** Walk the open `fields` bag and surface every primitive value as a
+ *  separate `key=value` line so the operator sees the full identity
+ *  of the captured source row — not just a curated subset. Strings
+ *  stay verbatim (entityId is base64); booleans / numbers stringify;
+ *  nulls and nested objects are skipped to avoid noise. */
+function sourceFields(p: OalSourcePayload): OalKv[] {
+  const out: OalKv[] = [];
+  for (const [k, v] of Object.entries(p.fields ?? {})) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'object') continue;
+    out.push({ k, v: String(v) });
   }
-  return parts.join(' · ');
+  return out;
+}
+
+/** Same idea for the metrics payload — `type` is rendered out of band
+ *  in the row header, but every other primitive top-level field
+ *  (timeBucket, total, value, plus per-metric extras like count,
+ *  summation, percentiles) becomes its own labelled line. */
+function metricFields(p: OalMetricsPayload): OalKv[] {
+  const out: OalKv[] = [];
+  for (const [k, v] of Object.entries(p)) {
+    if (k === 'type') continue;
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'object') continue;
+    out.push({ k, v: String(v) });
+  }
+  return out;
 }
 
 // ── Click-to-select + collaborative highlight (mirrors MAL) ────────
@@ -498,24 +517,31 @@ const allFolded = computed<boolean>(
                 <td class="oal__source"><code>{{ row.sample.sourceText || '—' }}</code></td>
                 <td class="oal__result">
                   <template v-if="row.source">
-                    <div><span class="oal__lbl">type</span> {{ row.source.type }}</div>
-                    <div v-if="row.source.fields.scope !== undefined">
-                      <span class="oal__lbl">scope</span> {{ row.source.fields.scope }}
+                    <div class="oal__kvline">
+                      <span class="oal__lbl">type</span>
+                      <span class="oal__kvval">{{ row.source.type }}</span>
                     </div>
-                    <div v-if="sourceSummary(row.source)" class="oal__summary">
-                      <code>{{ sourceSummary(row.source) }}</code>
+                    <div
+                      v-for="kv in sourceFields(row.source)"
+                      :key="kv.k"
+                      class="oal__kvline"
+                    >
+                      <span class="oal__lbl">{{ kv.k }}</span>
+                      <span class="oal__kvval">{{ kv.v }}</span>
                     </div>
                   </template>
                   <template v-else-if="row.metrics">
-                    <div><span class="oal__lbl">type</span> {{ row.metrics.type }}</div>
-                    <div v-if="row.metrics.timeBucket !== undefined">
-                      <span class="oal__lbl">timeBucket</span> {{ row.metrics.timeBucket }}
+                    <div class="oal__kvline">
+                      <span class="oal__lbl">type</span>
+                      <span class="oal__kvval">{{ row.metrics.type }}</span>
                     </div>
-                    <div v-if="row.metrics.total !== undefined">
-                      <span class="oal__lbl">total</span> {{ row.metrics.total }}
-                    </div>
-                    <div v-if="row.metrics.value !== undefined">
-                      <span class="oal__lbl">value</span> {{ row.metrics.value }}
+                    <div
+                      v-for="kv in metricFields(row.metrics)"
+                      :key="kv.k"
+                      class="oal__kvline"
+                    >
+                      <span class="oal__lbl">{{ kv.k }}</span>
+                      <span class="oal__kvval">{{ kv.v }}</span>
                     </div>
                   </template>
                 </td>
@@ -837,26 +863,27 @@ const allFolded = computed<boolean>(
   color: var(--rr-ink2);
 }
 
-.oal__lbl {
-  display: inline-block;
-  width: 90px;
-  color: var(--rr-dim);
-  font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  margin-right: 6px;
-}
-
-.oal__summary {
-  margin-top: 4px;
-}
-
-.oal__summary code {
+.oal__kvline {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px;
+  align-items: baseline;
   font-family: var(--rr-font-mono);
-  background: var(--rr-bg);
-  padding: 1px 4px;
-  color: var(--rr-ink2);
-  font-size: 14.5px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.oal__lbl {
+  color: var(--rr-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  white-space: nowrap;
+}
+
+.oal__kvval {
+  color: var(--rr-ink);
+  word-break: break-all;
 }
 
 .oal__sourcefallback {
