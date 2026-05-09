@@ -18,7 +18,10 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ['v*']
+    # Tag pushes are owned by `.github/workflows/release.yml` (image
+    # build with `:<version>` + `:latest`, cosign sign, SBOM, GH
+    # release). CI deliberately doesn't fire on tags to avoid double
+    # publishing.
 
 permissions:
   contents: read
@@ -93,17 +96,8 @@ jobs:
         run: |
           tags="${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}"
           tags="${tags}\n${{ steps.meta.outputs.image }}:sha-${{ github.sha }}"
-          # Branch push to main → :main rolling tag.
-          # Release tag push (refs/tags/v*) → :v<X.Y.Z> + :latest.
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            ref="${{ github.ref }}"
-            if [[ "$ref" == refs/tags/v* ]]; then
-              version="${ref#refs/tags/}"
-              tags="${tags}\n${{ steps.meta.outputs.image }}:${version}"
-              tags="${tags}\n${{ steps.meta.outputs.image }}:latest"
-            elif [[ "$ref" == "refs/heads/main" ]]; then
-              tags="${tags}\n${{ steps.meta.outputs.image }}:main"
-            fi
+            tags="${tags}\n${{ steps.meta.outputs.image }}:main"
           fi
           {
             echo 'tags<<EOF'
