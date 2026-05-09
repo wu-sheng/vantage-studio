@@ -1376,43 +1376,6 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
   text-align: right;
 }
 
-.mal__src {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  height: 100%;
-  border: 1px solid var(--rr-border);
-  background: var(--rr-bg);
-}
-
-.mal__srch {
-  padding: 6px 10px;
-  background: var(--rr-bg3);
-  border-bottom: 1px solid var(--rr-border);
-  font-family: var(--rr-font-mono);
-  font-size: 13px;
-  letter-spacing: 0.8px;
-  color: var(--rr-dim);
-}
-
-.mal__srcbody {
-  margin: 0;
-  padding: 10px;
-  font-family: var(--rr-font-mono);
-  font-size: 13.5px;
-  color: var(--rr-ink);
-  white-space: pre-wrap;
-  overflow: auto;
-  flex: 1 1 auto;
-}
-
-.mal__srcempty {
-  padding: 14px;
-  margin: 0;
-  color: var(--rr-dim);
-  font-style: italic;
-}
-
 .mal__hl {
   background: var(--rr-accent, var(--rr-active));
   color: var(--rr-bg);

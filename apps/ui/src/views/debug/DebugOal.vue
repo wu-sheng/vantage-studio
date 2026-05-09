@@ -240,17 +240,102 @@ function nodeKey(n: NodeSlice): string {
 
 /** Pull the operator-readable identity from an OAL source payload's
  *  `fields` bag. We surface entityId + the most useful per-source
- *  column (varies by source class) without baking a per-source map. */
+ *  column (varies by source class) without baking a per-source map.
+ *  Every field is `key=value` so a base64 entityId doesn't read as a
+ *  bare token next to its labelled siblings. */
 function sourceSummary(p: OalSourcePayload): string {
   const f = p.fields ?? {};
   const parts: string[] = [];
-  if (typeof f.entityId === 'string') parts.push(f.entityId);
+  if (typeof f.entityId === 'string') parts.push(`entityId=${f.entityId}`);
   for (const k of ['endpoint', 'sourceServiceName', 'destServiceName', 'serviceName']) {
     const v = f[k];
     if (typeof v === 'string' && v.length > 0) parts.push(`${k}=${v}`);
   }
   return parts.join(' · ');
 }
+
+// ── Click-to-select + collaborative highlight (mirrors MAL) ────────
+
+const selectedRow = ref<OalSampleRow | null>(null);
+
+function selectRow(row: OalSampleRow): void {
+  selectedRow.value = selectedRow.value === row ? null : row;
+}
+
+interface Segment {
+  text: string;
+  highlight: boolean;
+}
+
+const selectedFragment = computed<string>(
+  () => selectedRow.value?.sample.sourceText.trim() ?? '',
+);
+
+/** Split a rule field into highlight / plain segments around every
+ *  exact occurrence of the selected step's `sourceText`. Drives the
+ *  inline `<mark>` collaborative highlight inside the captured DSL —
+ *  clicking a step lights up the matching expression in the OAL
+ *  statement above the chain. */
+function highlightSegments(text: string | undefined, fragment: string): Segment[] {
+  if (!text) return [];
+  if (fragment === '') return [{ text, highlight: false }];
+  const segments: Segment[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const at = text.indexOf(fragment, cursor);
+    if (at < 0) {
+      segments.push({ text: text.slice(cursor), highlight: false });
+      break;
+    }
+    if (at > cursor) segments.push({ text: text.slice(cursor, at), highlight: false });
+    segments.push({ text: fragment, highlight: true });
+    cursor = at + fragment.length;
+  }
+  return segments;
+}
+
+// ── Per-record fold state + fold/expand all (mirrors MAL) ──────────
+
+const foldedRecords = ref<Set<string>>(new Set());
+
+function recordFoldKey(nKey: string, idx: number): string {
+  return `${nKey}#${idx}`;
+}
+
+function isRecordFolded(nKey: string, idx: number): boolean {
+  return foldedRecords.value.has(recordFoldKey(nKey, idx));
+}
+
+function toggleRecord(nKey: string, idx: number): void {
+  const k = recordFoldKey(nKey, idx);
+  const next = new Set(foldedRecords.value);
+  if (next.has(k)) next.delete(k);
+  else next.add(k);
+  foldedRecords.value = next;
+}
+
+function foldAllRecords(): void {
+  const next = new Set<string>();
+  for (const v of nodeViews.value) {
+    const nKey = v.nodeId ?? v.peer ?? '?';
+    for (const g of v.groups) next.add(recordFoldKey(nKey, g.index));
+  }
+  foldedRecords.value = next;
+}
+
+function expandAllRecords(): void {
+  foldedRecords.value = new Set();
+}
+
+const totalRecordCount = computed<number>(() => {
+  let n = 0;
+  for (const v of nodeViews.value) n += v.groups.length;
+  return n;
+});
+
+const allFolded = computed<boolean>(
+  () => totalRecordCount.value > 0 && foldedRecords.value.size === totalRecordCount.value,
+);
 </script>
 
 <template>
@@ -327,6 +412,23 @@ function sourceSummary(p: OalSourcePayload): string {
         — every <code>metric = from(Source…)</code> line has a green ▶ that
         deep-links here with the picker pre-filled.
       </p>
+      <div v-if="totalRecordCount > 0" class="oal__subhead">
+        <span class="oal__subheadct">{{ totalRecordCount }} records · {{ foldedRecords.size }} folded</span>
+        <div class="oal__subheadbtns">
+          <button
+            type="button"
+            class="oal__subheadbtn"
+            :disabled="allFolded"
+            @click="foldAllRecords"
+          >fold all</button>
+          <button
+            type="button"
+            class="oal__subheadbtn"
+            :disabled="foldedRecords.size === 0"
+            @click="expandAllRecords"
+          >expand all</button>
+        </div>
+      </div>
     </template>
 
     <template #idle-hint>
@@ -341,32 +443,59 @@ function sourceSummary(p: OalSourcePayload): string {
         no source rows captured on this node
       </div>
       <div v-else class="oal__groups">
-        <article v-for="g in node.groups" :key="g.index" class="oal__group">
-          <header class="oal__grouph">
+        <article
+          v-for="g in node.groups"
+          :key="g.index"
+          class="oal__group"
+          :class="{ 'oal__group--folded': isRecordFolded(nodeKey(node), g.index) }"
+        >
+          <header
+            class="oal__grouph"
+            @click="toggleRecord(nodeKey(node), g.index)"
+          >
+            <span class="oal__groupcaret">{{
+              isRecordFolded(nodeKey(node), g.index) ? '▸' : '▾'
+            }}</span>
             <span class="oal__groupid">source row #{{ g.index }}</span>
             <span class="oal__groupline">line {{ g.rec.rule.sourceLine ?? '—' }}</span>
             <code class="oal__rulename">{{ g.rec.rule.ruleName }}</code>
           </header>
-          <table class="oal__waterfall">
+          <template v-if="!isRecordFolded(nodeKey(node), g.index)">
+            <pre v-if="g.rec.dsl" class="oal__dsl"><code><template
+              v-for="(seg, si) in highlightSegments(g.rec.dsl, selectedFragment)"
+              :key="si"
+            ><mark
+              v-if="seg.highlight"
+              class="oal__hl"
+            >{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></code></pre>
+            <table class="oal__waterfall">
             <thead>
               <tr>
+                <th class="oal__kind">step</th>
                 <th class="oal__source">fragment</th>
-                <th class="oal__kind">type</th>
-                <th class="oal__cont">cont</th>
                 <th class="oal__result">payload</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(row, idx) in g.rows" :key="`${nodeKey(node)}-${g.index}-${idx}`">
-                <td class="oal__source"><code>{{ row.sample.sourceText || '—' }}</code></td>
+              <tr
+                v-for="(row, idx) in g.rows"
+                :key="`${nodeKey(node)}-${g.index}-${idx}`"
+                class="oal__row"
+                :class="{
+                  'oal__row--selected': selectedRow === row,
+                  'oal__row--stopped': !row.sample.continueOn,
+                }"
+                @click="selectRow(row)"
+              >
                 <td class="oal__kind">
+                  <span
+                    class="oal__flow"
+                    :class="{ 'oal__flow--stopped': !row.sample.continueOn }"
+                    :title="row.sample.continueOn ? 'chain continues to next step' : 'chain stopped here'"
+                  >{{ row.sample.continueOn ? '↓' : '⊘' }}</span>
                   <Pill :tone="sampleTone(row.sample.type)">{{ row.sample.type }}</Pill>
                 </td>
-                <td class="oal__cont">
-                  <Pill :tone="row.sample.continueOn ? 'ok' : 'warn'">
-                    {{ row.sample.continueOn ? 'cont' : 'stop' }}
-                  </Pill>
-                </td>
+                <td class="oal__source"><code>{{ row.sample.sourceText || '—' }}</code></td>
                 <td class="oal__result">
                   <template v-if="row.source">
                     <div><span class="oal__lbl">type</span> {{ row.source.type }}</div>
@@ -393,6 +522,7 @@ function sourceSummary(p: OalSourcePayload): string {
               </tr>
             </tbody>
           </table>
+          </template>
         </article>
       </div>
     </template>
@@ -519,6 +649,66 @@ function sourceSummary(p: OalSourcePayload): string {
   gap: 8px;
   padding: 4px 10px;
   background: var(--rr-bg);
+  cursor: pointer;
+  user-select: none;
+}
+
+.oal__grouph:hover {
+  background: var(--rr-bg2);
+}
+
+.oal__groupcaret {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  color: var(--rr-dim);
+  font-size: 11px;
+}
+
+.oal__group--folded .oal__grouph {
+  border-bottom: none;
+}
+
+.oal__subhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.oal__subheadct {
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  color: var(--rr-dim);
+  letter-spacing: 0.4px;
+}
+
+.oal__subheadbtns {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.oal__subheadbtn {
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.oal__subheadbtn:hover:not(:disabled) {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
+}
+
+.oal__subheadbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .oal__groupid {
@@ -563,7 +753,6 @@ function sourceSummary(p: OalSourcePayload): string {
 }
 
 .oal__source {
-  width: 280px;
   font-family: var(--rr-font-mono);
   color: var(--rr-ink);
 }
@@ -575,11 +764,71 @@ function sourceSummary(p: OalSourcePayload): string {
 }
 
 .oal__kind {
-  width: 110px;
+  width: 150px;
+  white-space: nowrap;
 }
 
-.oal__cont {
-  width: 70px;
+.oal__flow {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  margin-right: 6px;
+  font-family: var(--rr-font-mono);
+  color: var(--rr-dim);
+  font-size: 14px;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.oal__flow--stopped {
+  color: var(--rr-warn, #d6a96d);
+  font-weight: 600;
+}
+
+.oal__row {
+  cursor: pointer;
+  transition: background-color 80ms;
+}
+
+.oal__row:hover {
+  background: var(--rr-bg2);
+}
+
+.oal__row--selected,
+.oal__row--selected:hover {
+  background: var(--rr-bg3);
+  outline: 1px solid var(--rr-accent, var(--rr-active));
+  outline-offset: -1px;
+}
+
+.oal__row--stopped td {
+  border-left: 2px solid var(--rr-warn, #d6a96d);
+}
+
+.oal__dsl {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--rr-bg2);
+  border-bottom: 1px solid var(--rr-border);
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+  max-height: 120px;
+}
+
+.oal__dsl code {
+  font-family: var(--rr-font-mono);
+  background: transparent;
+  padding: 0;
+}
+
+.oal__hl {
+  background: var(--rr-accent, var(--rr-active));
+  color: var(--rr-bg);
+  padding: 1px 2px;
 }
 
 .oal__result {
