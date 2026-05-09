@@ -289,7 +289,10 @@ function parseStartArgs(raw: unknown, reply: FastifyReply): StartSessionArgs | n
       typeof b.recordCap !== 'number' ||
       !Number.isFinite(b.recordCap) ||
       b.recordCap <= 0 ||
-      b.recordCap > 10_000
+      // Mirror OAP's SessionLimits.MAX_RECORD_CAP (100). Reject here so
+      // operators see a 400 from the BFF instead of an OAP round-trip
+      // returning `invalid_limits`.
+      b.recordCap > 100
     ) {
       reply.code(400).send({ error: 'invalid_recordCap' });
       return null;

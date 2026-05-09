@@ -258,11 +258,12 @@ export interface MalSamplesPayload {
 }
 
 /** MAL `output`-type payload (the `appendMeterEmit` probe) — the
- *  materialised metric ready for L1 push. The current recorder emits
- *  `metric`, `entity`, `valueType`, `timeBucket`
- *  (`MALDebugRecorderImpl.meterEmitPayload`); upstream is rolling out
- *  a serialised `value` too. Both shapes are accepted — Studio renders
- *  whatever fields are present without inferring from upstream stages. */
+ *  materialised metric ready for L1 push. Per OAP's
+ *  `MALDebugRecorderImpl.meterEmitPayload`: always `metric`, `entity`,
+ *  `valueType`, `timeBucket`; `value` only when the holder type is
+ *  recognised (LongValueHolder / IntValueHolder / DoubleValueHolder /
+ *  LabeledValueHolder). Studio renders whatever's present and never
+ *  infers from upstream stages. */
 export interface MalOutputPayload {
   metric: string;
   /** `MeterEntity#toString()` — operator-readable form of the entity
@@ -275,11 +276,17 @@ export interface MalOutputPayload {
   valueType: string;
   /** Time bucket of the emit (yyyyMMddHHmm). */
   timeBucket: number;
-  /** Materialised value(s) ready for storage. Optional today — only
-   *  set on OAP builds that serialise the `AcceptableValue`. Scalar
-   *  metrics report a number; histogram-style metrics report an
-   *  array (one entry per bucket / percentile). */
-  value?: number | number[];
+  /** Materialised reading. Three shapes per the recorder's holder
+   *  switch:
+   *  - `number` — scalar holders (Sum / Avg / Max / Min / Latest /
+   *    SumPerMin / CPM …; finite doubles).
+   *  - `string` — non-finite doubles serialised as `"NaN"`,
+   *    `"Infinity"`, `"-Infinity"` so the wire stays valid JSON.
+   *  - `Record<string, number>` — labeled metrics (`*Labeled`) and
+   *    histogram-percentile functions emit a `DataTable`; keys are
+   *    label combos for `*Labeled`, `p=<rank>` entries for percentile
+   *    functions. */
+  value?: number | string | Record<string, number>;
 }
 
 // ─── LAL payload shapes ────────────────────────────────────────────

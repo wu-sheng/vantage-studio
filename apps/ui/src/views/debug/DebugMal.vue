@@ -60,9 +60,9 @@ const history = useDebugHistory('mal');
  *  drilled out of the file's YAML body. */
 const selectedKey = ref<string>('');
 const selectedMetric = ref<string>('');
-// Default 100 records / session — small enough to keep BFF + OAP
-// memory bounded for casual debugging; operators can dial up to
-// 10 000 (upstream's hard cap) for longer captures.
+// SessionLimits.MAX_RECORD_CAP on the OAP side is 100 (and so is the
+// default). The input is bounded the same way; lower if a single
+// execution is enough or you want the captured page tighter.
 const recordCap = ref<number>(100);
 const retentionMinutes = ref<number>(5);
 
@@ -624,14 +624,27 @@ function toggleEntity(row: MalSampleRow): void {
   expandedEntities.value = next;
 }
 
-/** Output payloads carry a scalar number for plain meters and an
- *  array of numbers for histogram / percentile meters (one per bucket
- *  / per percentile). Render arrays inline as `[v1, v2, …]` so the
- *  operator sees every component without us reaching into upstream
- *  stages for the per-bucket labels. */
-function formatOutputValue(v: number | number[]): string {
-  if (Array.isArray(v)) return `[${v.join(', ')}]`;
-  return String(v);
+/** Format the output payload's `value` for inline display. Three
+ *  wire shapes per `MalOutputPayload.value`:
+ *
+ *  - number → plain numeric (Sum / Avg / scalar holders).
+ *  - string → non-finite double sentinel (`NaN`, `Infinity`,
+ *    `-Infinity`); render verbatim so a div-by-zero is visible.
+ *  - object → labeled / histogram-percentile DataTable; rendered as
+ *    `key=value · key=value …`.
+ *
+ *  When the value is multi-line (object), the caller can opt to drop
+ *  it into a kv block for readability — but for the meter card a
+ *  single line keeps the layout tight, and operators with many keys
+ *  see the full set in the right-pane samples table on the previous
+ *  step (each labeled key has already been rendered there as its own
+ *  row with full label tuples). */
+function formatOutputValue(v: number | string | Record<string, number>): string {
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'string') return v;
+  const entries = Object.entries(v);
+  if (entries.length === 0) return '{}';
+  return entries.map(([k, n]) => `${k}=${n}`).join(' · ');
 }
 
 </script>
@@ -673,7 +686,7 @@ function formatOutputValue(v: number | number[]): string {
       </div>
       <div class="ctl">
         <label class="ctl__lbl">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="10000" class="ctl__input" />
+        <input v-model.number="recordCap" type="number" min="1" max="100" class="ctl__input" />
       </div>
       <div class="ctl">
         <label class="ctl__lbl">retention (min)</label>

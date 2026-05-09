@@ -53,9 +53,9 @@ const history = useDebugHistory('oal');
  *  but the install itself is keyed on file + metric. */
 const selectedFile = ref<string>('');
 const selectedMetric = ref<string>('');
-// Default 100 records / session — small enough to keep BFF + OAP
-// memory bounded for casual debugging; operators can dial up to
-// 10 000 (upstream's hard cap) for longer captures.
+// SessionLimits.MAX_RECORD_CAP on the OAP side is 100 (and so is the
+// default). The input is bounded the same way; lower if a single
+// execution is enough or you want the captured page tighter.
 const recordCap = ref<number>(100);
 const retentionMinutes = ref<number>(5);
 
@@ -395,7 +395,7 @@ const allFolded = computed<boolean>(
       </div>
       <div class="ctl">
         <label class="ctl__lbl">recordCap</label>
-        <input v-model.number="recordCap" type="number" min="1" max="10000" class="ctl__input" />
+        <input v-model.number="recordCap" type="number" min="1" max="100" class="ctl__input" />
       </div>
       <div class="ctl">
         <label class="ctl__lbl">retention (min)</label>
