@@ -18,7 +18,7 @@
  * `items[]`); output samples carry the materialised metric
  * (`metric`, `entity`, `valueType`, `value`, `timeBucket`).
  */
-import { computed, ref, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useQuery } from '@tanstack/vue-query';
 import type {
@@ -31,10 +31,12 @@ import type {
   MalSamplesPayload,
   NodeSlice,
   SessionRecord,
+  SessionResponse,
   SessionSample,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
+import { useDebugHistory, type HistoryEntry } from '../../composables/useDebugHistory.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
@@ -55,6 +57,7 @@ const MAL_CATALOGS: Catalog[] = ['otel-rules', 'log-mal-rules', 'telegraf-rules'
 
 const route = useRoute();
 const dbg = useDebugSession('mal');
+const history = useDebugHistory('mal');
 /** A MAL "rule" in the catalog is a YAML **file** (rule-set) — e.g.
  *  `vm`, `mysql-exporter`. It contains many individual metrics under
  *  `metricsRules:`. The OAP debug install keys on
@@ -84,6 +87,7 @@ watch(
   },
   { immediate: true },
 );
+
 
 // Per-catalog picker feed: union of `/runtime/rule/list` (runtime +
 // dslManager-tracked) and `/runtime/rule/bundled` (every shipped MAL
@@ -252,8 +256,86 @@ interface MalNodeView extends NodeSlice {
   recordViews: MalRecordView[];
 }
 
+// ── Historical replay ──────────────────────────────────────────────
+
+/** When set, the view renders this saved capture instead of the live
+ *  session. The composable's polling state (state/error/peerAcks) is
+ *  left alone — start/stop still talks to OAP. The historical banner
+ *  surfaces "you're not looking at live data" with a back button. */
+const historicalEntry = shallowRef<HistoryEntry | null>(null);
+
+const displaySession = computed<SessionResponse | null>(
+  () => historicalEntry.value?.session ?? dbg.session.value,
+);
+
+function loadHistorical(entry: HistoryEntry): void {
+  historicalEntry.value = entry;
+  selectedKey.value = `${entry.catalog}/${entry.name}`;
+  selectedMetric.value = entry.ruleName;
+  if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
+  if (entry.retentionMillis !== undefined) {
+    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+  }
+  // Reset transient view state so the historical capture lands clean.
+  selectedRow.value = null;
+  expandedEntities.value = new Set();
+  foldedRecords.value = new Set();
+}
+
+function clearHistorical(): void {
+  historicalEntry.value = null;
+  selectedRow.value = null;
+}
+
+/** Deep-link from `/debug/history` — `?historyId=<id>` loads that
+ *  saved capture. Reload-safe (storage is the same browser store the
+ *  history page reads). When the id is removed from the URL, the
+ *  view falls back to live. */
+watch(
+  () => route.query.historyId,
+  (id) => {
+    if (typeof id !== 'string' || id === '') {
+      if (historicalEntry.value !== null) clearHistorical();
+      return;
+    }
+    if (historicalEntry.value?.id === id) return;
+    const entry = history.entries.value.find((e) => e.id === id);
+    if (entry) loadHistorical(entry);
+  },
+  { immediate: true },
+);
+
+/** Auto-save on capture-end. We watch state transitions: when a live
+ *  capture moves from `capturing` → `captured` / `stopped`, snapshot
+ *  the session into local history. Skipped while replaying history
+ *  (start/stop still works through the live composable, but the
+ *  watch fires off the live `dbg.state`). */
+watch(
+  () => dbg.state.value,
+  (next, prev) => {
+    if (historicalEntry.value !== null) return;
+    const isFinal = next === 'captured' || next === 'stopped';
+    const wasLive = prev === 'capturing' || prev === 'starting';
+    if (!isFinal || !wasLive) return;
+    const sess = dbg.session.value;
+    const rule = selectedRule.value;
+    if (!sess || !rule || !selectedMetric.value) return;
+    history.save({
+      widget: 'mal',
+      catalog: rule.catalog,
+      name: rule.name,
+      ruleName: selectedMetric.value,
+      recordCap: recordCap.value,
+      retentionMillis: retentionMinutes.value * 60 * 1000,
+      recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
+      nodeCount: sess.nodes.length,
+      session: sess,
+    });
+  },
+);
+
 const nodeViews = computed<MalNodeView[]>(() => {
-  const s = dbg.session.value;
+  const s = displaySession.value;
   if (!s) return [];
   return s.nodes.map((n) => {
     const nKey = n.nodeId ?? n.peer ?? '?';
@@ -472,6 +554,51 @@ function isEntityExpanded(row: MalSampleRow): boolean {
   return expandedEntities.value.has(rowEntityKey(row));
 }
 
+// ── Per-record fold state + fold/expand all ────────────────────────
+
+const foldedRecords = ref<Set<string>>(new Set());
+
+function recordFoldKey(nodeKey: string, recordIdx: number): string {
+  return `${nodeKey}#${recordIdx}`;
+}
+
+function isRecordFolded(nodeKey: string, recordIdx: number): boolean {
+  return foldedRecords.value.has(recordFoldKey(nodeKey, recordIdx));
+}
+
+function toggleRecord(nodeKey: string, recordIdx: number): void {
+  const k = recordFoldKey(nodeKey, recordIdx);
+  const next = new Set(foldedRecords.value);
+  if (next.has(k)) next.delete(k);
+  else next.add(k);
+  foldedRecords.value = next;
+}
+
+function foldAllRecords(): void {
+  const next = new Set<string>();
+  for (const n of nodeViews.value) {
+    const nKey = n.nodeId ?? n.peer ?? '?';
+    for (const rv of n.recordViews) {
+      next.add(recordFoldKey(nKey, rv.recordIdx));
+    }
+  }
+  foldedRecords.value = next;
+}
+
+function expandAllRecords(): void {
+  foldedRecords.value = new Set();
+}
+
+const totalRecordCount = computed<number>(() => {
+  let n = 0;
+  for (const v of nodeViews.value) n += v.recordViews.length;
+  return n;
+});
+
+const allFolded = computed<boolean>(
+  () => totalRecordCount.value > 0 && foldedRecords.value.size === totalRecordCount.value,
+);
+
 function toggleEntity(row: MalSampleRow): void {
   const k = rowEntityKey(row);
   const next = new Set(expandedEntities.value);
@@ -495,7 +622,11 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
 </script>
 
 <template>
-  <DebugView :dbg="dbg" :node-views="nodeViews">
+  <DebugView
+    :dbg="dbg"
+    :node-views="nodeViews"
+    :view-session="historicalEntry?.session ?? null"
+  >
     <template #controls>
       <div class="ctl">
         <label class="ctl__lbl">rule file</label>
@@ -536,11 +667,47 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
       <router-link
+        class="ctl__editlink"
+        to="/debug/history"
+        title="browse past captures saved locally"
+      >history ({{ history.entries.value.length }}) →</router-link>
+      <router-link
         v-if="selectedRule"
         class="ctl__editlink"
         :to="{ path: '/edit', query: { catalog: selectedRule.catalog, name: selectedRule.name } }"
         :title="`open ${selectedRule.catalog} · ${selectedRule.name} in the editor`"
       >open in editor →</router-link>
+    </template>
+
+    <template #banner>
+      <div v-if="historicalEntry" class="mal__histbanner">
+        <span class="mal__histbicon">⟲</span>
+        <span>
+          viewing saved capture from <strong>{{ formatTime(historicalEntry.savedAt) }}</strong>
+          · {{ historicalEntry.catalog }} · {{ historicalEntry.name }} · {{ historicalEntry.ruleName }}
+        </span>
+        <button type="button" class="mal__histback" @click="clearHistorical">back to live</button>
+      </div>
+    </template>
+
+    <template #subhead>
+      <div v-if="totalRecordCount > 0" class="mal__subhead">
+        <span class="mal__subheadct">{{ totalRecordCount }} records · {{ foldedRecords.size }} folded</span>
+        <div class="mal__subheadbtns">
+          <button
+            type="button"
+            class="mal__subheadbtn"
+            :disabled="allFolded"
+            @click="foldAllRecords"
+          >fold all</button>
+          <button
+            type="button"
+            class="mal__subheadbtn"
+            :disabled="foldedRecords.size === 0"
+            @click="expandAllRecords"
+          >expand all</button>
+        </div>
+      </div>
     </template>
 
     <template #idle-hint>
@@ -561,12 +728,18 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
           v-for="rv in node.recordViews"
           :key="`${nodeKey(node)}-${rv.recordIdx}`"
           class="mal__rec"
+          :class="{ 'mal__rec--folded': isRecordFolded(nodeKey(node), rv.recordIdx) }"
         >
-          <header class="mal__rech">
+          <header
+            class="mal__rech"
+            @click="toggleRecord(nodeKey(node), rv.recordIdx)"
+          >
+            <span class="mal__reccaret">{{ isRecordFolded(nodeKey(node), rv.recordIdx) ? '▸' : '▾' }}</span>
             <span class="mal__recidx">#{{ rv.recordIdx + 1 }}</span>
             <span class="mal__rectime">{{ formatTime(rv.rec.startedAtMs) }}</span>
             <span class="mal__recmeta">{{ rv.rows.length }} steps</span>
           </header>
+          <template v-if="!isRecordFolded(nodeKey(node), rv.recordIdx)">
           <dl class="mal__rmeta">
             <div class="mal__rmpair">
               <dt>metric</dt>
@@ -737,6 +910,7 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
               </div>
             </template>
           </div>
+          </template>
         </article>
       </div>
     </template>
@@ -776,6 +950,42 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
   width: 90px;
 }
 
+.mal__histbanner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--rr-bg2);
+  border: 1px solid var(--rr-warn, #d6a96d);
+  border-left-width: 3px;
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-ink2);
+}
+
+.mal__histbicon {
+  color: var(--rr-warn, #d6a96d);
+  font-size: 16px;
+}
+
+.mal__histback {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.mal__histback:hover {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
+}
+
 .mal__empty {
   padding: 14px;
   font-size: 15px;
@@ -802,6 +1012,66 @@ function outputValueRows(row: MalSampleRow): FlatRow[] {
   padding: 6px 10px;
   background: var(--rr-bg3);
   border-bottom: 1px solid var(--rr-border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mal__rech:hover {
+  background: var(--rr-bg2);
+}
+
+.mal__reccaret {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  color: var(--rr-dim);
+  font-size: 11px;
+}
+
+.mal__rec--folded .mal__rech {
+  border-bottom: none;
+}
+
+.mal__subhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.mal__subheadct {
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  color: var(--rr-dim);
+  letter-spacing: 0.4px;
+}
+
+.mal__subheadbtns {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.mal__subheadbtn {
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.mal__subheadbtn:hover:not(:disabled) {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
+}
+
+.mal__subheadbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .mal__recidx {

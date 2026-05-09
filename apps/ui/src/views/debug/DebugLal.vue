@@ -23,7 +23,7 @@
  * record per DSL statement, with `sample.sourceLine` pointing at the
  * 1-based DSL-block line that fired.
  */
-import { computed, ref, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useQuery } from '@tanstack/vue-query';
 import type {
@@ -36,10 +36,12 @@ import type {
   NodeSlice,
   SampleType,
   SessionRecord,
+  SessionResponse,
   SessionSample,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
+import { useDebugHistory, type HistoryEntry } from '../../composables/useDebugHistory.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
@@ -47,6 +49,7 @@ import { isLalSamplePayload } from './payload.js';
 
 const route = useRoute();
 const dbg = useDebugSession('lal');
+const history = useDebugHistory('lal');
 /** A LAL "rule" in the catalog is a YAML **file** — e.g.
  *  `default`, `envoy-ai-gateway`. Each file's body has a `rules:`
  *  list, and OAP keys the debug install on
@@ -199,8 +202,73 @@ function stepKeyOf(s: SessionSample): string {
   return `${s.type}@${s.sourceLine ?? 0}`;
 }
 
+// ── Historical replay ──────────────────────────────────────────────
+
+const historicalEntry = shallowRef<HistoryEntry | null>(null);
+
+const displaySession = computed<SessionResponse | null>(
+  () => historicalEntry.value?.session ?? dbg.session.value,
+);
+
+function loadHistorical(entry: HistoryEntry): void {
+  historicalEntry.value = entry;
+  selectedFile.value = entry.name;
+  selectedRule.value = entry.ruleName;
+  if (entry.granularity === 'block' || entry.granularity === 'statement') {
+    granularity.value = entry.granularity;
+  }
+  if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
+  if (entry.retentionMillis !== undefined) {
+    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+  }
+  selectedCell.value = null;
+}
+
+function clearHistorical(): void {
+  historicalEntry.value = null;
+  selectedCell.value = null;
+}
+
+watch(
+  () => dbg.state.value,
+  (next, prev) => {
+    if (historicalEntry.value !== null) return;
+    const isFinal = next === 'captured' || next === 'stopped';
+    const wasLive = prev === 'capturing' || prev === 'starting';
+    if (!isFinal || !wasLive) return;
+    const sess = dbg.session.value;
+    if (!sess || !selectedFile.value || !selectedRule.value) return;
+    history.save({
+      widget: 'lal',
+      catalog: 'lal',
+      name: selectedFile.value,
+      ruleName: selectedRule.value,
+      granularity: granularity.value,
+      recordCap: recordCap.value,
+      retentionMillis: retentionMinutes.value * 60 * 1000,
+      recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
+      nodeCount: sess.nodes.length,
+      session: sess,
+    });
+  },
+);
+
+watch(
+  () => route.query.historyId,
+  (id) => {
+    if (typeof id !== 'string' || id === '') {
+      if (historicalEntry.value !== null) clearHistorical();
+      return;
+    }
+    if (historicalEntry.value?.id === id) return;
+    const entry = history.entries.value.find((e) => e.id === id);
+    if (entry) loadHistorical(entry);
+  },
+  { immediate: true },
+);
+
 const nodeViews = computed<LalNodeView[]>(() => {
-  const s = dbg.session.value;
+  const s = displaySession.value;
   if (!s) return [];
   return s.nodes.map((n) => {
     const records = n.records ?? [];
@@ -319,7 +387,7 @@ function selectCell(cell: LalCell): void {
 const sourceDsl = computed<string | null>(() => {
   const sel = selectedCell.value;
   if (sel) return sel.rec.dsl ?? null;
-  const s = dbg.session.value;
+  const s = displaySession.value;
   if (!s) return null;
   for (let i = s.nodes.length - 1; i >= 0; i--) {
     const recs = s.nodes[i]!.records;
@@ -377,7 +445,12 @@ void TAG_STATUS_TONE;
 </script>
 
 <template>
-  <DebugView :dbg="dbg" :node-views="nodeViews" :source-open="selectedCell !== null">
+  <DebugView
+    :dbg="dbg"
+    :node-views="nodeViews"
+    :source-open="selectedCell !== null"
+    :view-session="historicalEntry?.session ?? null"
+  >
     <template #controls>
       <div class="ctl">
         <label class="ctl__lbl">rule file</label>
@@ -433,11 +506,27 @@ void TAG_STATUS_TONE;
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
       <router-link
+        class="ctl__editlink"
+        to="/debug/history"
+        title="browse past captures saved locally"
+      >history ({{ history.entries.value.length }}) →</router-link>
+      <router-link
         v-if="selectedFile"
         class="ctl__editlink"
         :to="{ path: '/edit', query: { catalog: 'lal', name: selectedFile } }"
         :title="`open lal · ${selectedFile} in the editor`"
       >open in editor →</router-link>
+    </template>
+
+    <template #banner>
+      <div v-if="historicalEntry" class="lal__histbanner">
+        <span class="lal__histbicon">⟲</span>
+        <span>
+          viewing saved capture from <strong>{{ formatTime(historicalEntry.savedAt) }}</strong>
+          · {{ historicalEntry.catalog }} · {{ historicalEntry.name }} · {{ historicalEntry.ruleName }}
+        </span>
+        <button type="button" class="lal__histback" @click="clearHistorical">back to live</button>
+      </div>
     </template>
 
     <template #idle-hint>
@@ -864,5 +953,41 @@ void TAG_STATUS_TONE;
   background: var(--rr-accent, var(--rr-active));
   color: var(--rr-bg);
   padding: 1px 2px;
+}
+
+.lal__histbanner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--rr-bg2);
+  border: 1px solid var(--rr-warn, #d6a96d);
+  border-left-width: 3px;
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-ink2);
+}
+
+.lal__histbicon {
+  color: var(--rr-warn, #d6a96d);
+  font-size: 16px;
+}
+
+.lal__histback {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.lal__histback:hover {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
 }
 </style>

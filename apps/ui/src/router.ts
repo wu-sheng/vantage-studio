@@ -79,6 +79,16 @@ const routes: RouteRecordRaw[] = [
     meta: { layout: 'main', requiresAuth: true },
   },
   {
+    /* Capture history is its own peer page under live-debugger in the
+     * sidebar. Listed here AFTER the tab route so the constrained
+     * `:tab(mal|lal|oal)?` regex doesn't shadow it (it wouldn't —
+     * `history` isn't in the alternation — but order is explicit). */
+    path: '/debug/history',
+    name: 'debug-history',
+    component: () => import('./views/DebugHistoryPage.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('./views/NotFound.vue'),

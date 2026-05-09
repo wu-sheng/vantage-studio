@@ -1,0 +1,385 @@
+<!--
+  Copyright 2026 The Vantage Studio Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+-->
+<script setup lang="ts">
+/**
+ * Cross-DSL capture history. Lists every locally-saved debug session
+ * (MAL / LAL / OAL) from `useDebugHistory`, sorted newest first, with
+ * a per-widget filter chip-row.
+ *
+ * Loading an entry deep-links into the matching debugger via
+ * `/debug/{widget}?historyId=<id>` — the per-DSL view picks the id off
+ * the route on mount and hands it to its `loadHistorical(entry)`.
+ * That keeps the storage logic centralised here while the rendering
+ * stays in the DSL views that already understand each shape.
+ */
+import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
+import {
+  useDebugHistory,
+  type DebugWidget,
+  type HistoryEntry,
+} from '../composables/useDebugHistory.js';
+import Pill from '../design/primitives/Pill.vue';
+
+const router = useRouter();
+/* The composable's `widget` arg only filters `entries`; `all` returns
+ * everything. We bind to MAL arbitrarily and use `all` for the table. */
+const history = useDebugHistory('mal');
+
+type WidgetFilter = 'all' | DebugWidget;
+const filter = ref<WidgetFilter>('all');
+
+const filteredEntries = computed<HistoryEntry[]>(() => {
+  const all = history.all.value;
+  return filter.value === 'all' ? all : all.filter((e) => e.widget === filter.value);
+});
+
+const counts = computed(() => {
+  const c: Record<WidgetFilter, number> = { all: 0, mal: 0, lal: 0, oal: 0 };
+  for (const e of history.all.value) {
+    c.all += 1;
+    c[e.widget] += 1;
+  }
+  return c;
+});
+
+const widgetTone: Record<DebugWidget, 'info' | 'warn' | 'ok'> = {
+  mal: 'info',
+  lal: 'warn',
+  oal: 'ok',
+};
+
+function formatDateTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function loadEntry(entry: HistoryEntry): void {
+  void router.push({
+    path: `/debug/${entry.widget}`,
+    query: { historyId: entry.id },
+  });
+}
+
+function deleteEntry(id: string): void {
+  history.remove(id);
+}
+
+function clearAll(): void {
+  if (typeof window !== 'undefined' && !window.confirm('delete all saved captures?')) return;
+  // history.clear() only nukes the bound widget; iterate to wipe all.
+  for (const e of [...history.all.value]) {
+    history.remove(e.id);
+  }
+}
+</script>
+
+<template>
+  <div class="dh">
+    <header class="dh__h">
+      <div>
+        <h1 class="dh__title">capture history</h1>
+        <p class="dh__sub">
+          past debug sessions captured locally in this browser. nothing
+          leaves your machine; entries cap at 20 per browser, oldest first.
+        </p>
+      </div>
+      <button
+        v-if="history.all.value.length > 0"
+        type="button"
+        class="dh__clearall"
+        @click="clearAll"
+      >clear all</button>
+    </header>
+
+    <div class="dh__filters">
+      <button
+        v-for="key in (['all', 'mal', 'lal', 'oal'] as const)"
+        :key="key"
+        type="button"
+        class="dh__filterchip"
+        :class="{ 'dh__filterchip--active': filter === key }"
+        @click="filter = key"
+      >
+        {{ key }} <span class="dh__filterct">{{ counts[key] }}</span>
+      </button>
+    </div>
+
+    <div v-if="filteredEntries.length === 0" class="dh__empty">
+      <template v-if="history.all.value.length === 0">
+        no saved captures yet — run a session in the
+        <router-link to="/debug">live debugger</router-link>; finished
+        sessions auto-save here.
+      </template>
+      <template v-else>
+        no captures match this filter.
+      </template>
+    </div>
+
+    <ul v-else class="dh__list">
+      <li v-for="entry in filteredEntries" :key="entry.id" class="dh__item">
+        <div class="dh__col dh__col--meta">
+          <Pill :tone="widgetTone[entry.widget]">{{ entry.widget }}</Pill>
+          <span class="dh__time">{{ formatDateTime(entry.savedAt) }}</span>
+        </div>
+        <div class="dh__col dh__col--rule">
+          <div class="dh__rulekey">
+            <code class="dh__cat">{{ entry.catalog }}</code>
+            <span class="dh__sep">·</span>
+            <code class="dh__name">{{ entry.name }}</code>
+            <span class="dh__sep">·</span>
+            <code class="dh__metric">{{ entry.ruleName }}</code>
+          </div>
+          <div class="dh__counts">
+            {{ entry.recordCount }} records · {{ entry.nodeCount }} nodes
+            <template v-if="entry.granularity">· {{ entry.granularity }}</template>
+            <template v-if="entry.recordCap">· cap {{ entry.recordCap }}</template>
+          </div>
+        </div>
+        <div class="dh__col dh__col--actions">
+          <button type="button" class="dh__load" @click="loadEntry(entry)">load →</button>
+          <button
+            type="button"
+            class="dh__del"
+            :title="`delete this entry`"
+            @click="deleteEntry(entry.id)"
+          >×</button>
+        </div>
+      </li>
+    </ul>
+  </div>
+</template>
+
+<style scoped>
+.dh {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 22px 26px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.dh__h {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.dh__title {
+  margin: 0 0 4px;
+  font-family: var(--rr-font-mono);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--rr-heading);
+  letter-spacing: 0.4px;
+}
+
+.dh__sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--rr-dim);
+  max-width: 640px;
+  line-height: 1.5;
+}
+
+.dh__clearall {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--rr-warn, #d6a96d);
+  color: var(--rr-warn, #d6a96d);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.dh__clearall:hover {
+  background: var(--rr-bg2);
+}
+
+.dh__filters {
+  display: flex;
+  gap: 6px;
+}
+
+.dh__filterchip {
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dh__filterchip:hover {
+  border-color: var(--rr-ink2);
+  color: var(--rr-heading);
+}
+
+.dh__filterchip--active {
+  background: var(--rr-bg3);
+  border-color: var(--rr-accent, var(--rr-active));
+  color: var(--rr-heading);
+}
+
+.dh__filterct {
+  font-size: 10.5px;
+  color: var(--rr-dim);
+}
+
+.dh__filterchip--active .dh__filterct {
+  color: var(--rr-accent, var(--rr-active));
+}
+
+.dh__empty {
+  padding: 24px;
+  font-size: 13.5px;
+  color: var(--rr-dim);
+  font-style: italic;
+  border: 1px dashed var(--rr-border);
+  text-align: center;
+}
+
+.dh__empty a {
+  color: var(--rr-accent, var(--rr-active));
+}
+
+.dh__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rr-border);
+}
+
+.dh__item {
+  display: grid;
+  grid-template-columns: 200px 1fr max-content;
+  gap: 16px;
+  padding: 12px 14px;
+  background: var(--rr-bg);
+  border-bottom: 1px solid var(--rr-border);
+  align-items: center;
+}
+
+.dh__item:last-child {
+  border-bottom: none;
+}
+
+.dh__item:hover {
+  background: var(--rr-bg2);
+}
+
+.dh__col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dh__col--meta {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.dh__col--actions {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
+.dh__time {
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  color: var(--rr-dim);
+  white-space: nowrap;
+}
+
+.dh__rulekey {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+}
+
+.dh__rulekey code {
+  font-family: var(--rr-font-mono);
+  background: transparent;
+  padding: 0;
+}
+
+.dh__cat {
+  color: var(--rr-dim);
+}
+
+.dh__name {
+  color: var(--rr-ink2);
+}
+
+.dh__metric {
+  color: var(--rr-accent, var(--rr-active));
+}
+
+.dh__sep {
+  color: var(--rr-border);
+}
+
+.dh__counts {
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  color: var(--rr-dim);
+}
+
+.dh__load {
+  background: transparent;
+  border: 1px solid var(--rr-accent, var(--rr-active));
+  color: var(--rr-accent, var(--rr-active));
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.dh__load:hover {
+  background: var(--rr-bg3);
+}
+
+.dh__del {
+  width: 30px;
+  height: 26px;
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-dim);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.dh__del:hover {
+  color: var(--rr-warn, #d6a96d);
+  border-color: var(--rr-warn, #d6a96d);
+}
+</style>

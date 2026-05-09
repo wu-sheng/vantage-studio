@@ -80,7 +80,14 @@ const sections: NavSection[] = [
       {
         label: 'Live debugger',
         to: '/debug',
-        active: (p) => p.startsWith('/debug'),
+        /* Match /debug and /debug/{tab} but NOT /debug/history — the
+         * history page is its own peer entry below. */
+        active: (p) => p === '/debug' || /^\/debug\/(mal|lal|oal)/.test(p),
+      },
+      {
+        label: 'Capture history',
+        to: '/debug/history',
+        active: (p) => p.startsWith('/debug/history'),
       },
     ],
   },

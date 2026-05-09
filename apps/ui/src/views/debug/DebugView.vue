@@ -69,13 +69,29 @@ const props = withDefaults(
      *  decides when it's relevant (typically when the operator has
      *  selected a step row). Default false → no sidecar at all. */
     sourceOpen?: boolean;
+    /** Optional override for the rendered session — when a saved
+     *  capture is being viewed from history, the parent supplies it
+     *  here so DebugView gates its capture section on the saved data
+     *  instead of the live composable's `session`. Live polling
+     *  state (peerAcks, NodeCoverage) is suppressed in that mode. */
+    viewSession?: SessionResponse | null;
   }>(),
-  { sourceOpen: false },
+  { sourceOpen: false, viewSession: null },
+);
+
+/** True when the parent is forcing a non-live view (history replay). */
+const isHistorical = computed(() => props.viewSession !== null && props.viewSession !== undefined);
+const effectiveSession = computed<SessionResponse | null>(
+  () => props.viewSession ?? props.dbg.session.value,
 );
 
 const slots = defineSlots<{
   controls(): unknown;
   subhead(): unknown;
+  /** Banner rendered above the capture section — typically used to
+   *  surface the "viewing historical capture" state with a back-to-live
+   *  control. The shell adds no chrome of its own. */
+  banner(): unknown;
   'idle-hint'(): unknown;
   empty(props: { node: N }): unknown;
   'node-body'(props: { node: N }): unknown;
@@ -133,16 +149,18 @@ function nodeStatusTone(status: NodeSlice['status']): 'ok' | 'info' | 'warn' | '
     <p v-if="dbg.error.value" class="dv__error">{{ dbg.error.value }}</p>
 
     <NodeCoverage
-      v-if="dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0"
+      v-if="!isHistorical && (dbg.peerAcks.value.length > 0 || (dbg.session.value?.nodes?.length ?? 0) > 0)"
       :peer-acks="dbg.peerAcks.value"
       :node-statuses="dbg.session.value?.nodes ?? []"
       :installed="dbg.installed.value ?? null"
       :prior-cleanup="dbg.priorCleanup.value ?? null"
     />
 
-    <section v-if="dbg.session.value" class="dv__capture">
+    <slot name="banner" />
+
+    <section v-if="effectiveSession" class="dv__capture">
       <header class="dv__captureh">
-        <span class="dv__sid2">session {{ dbg.session.value.sessionId }}</span>
+        <span class="dv__sid2">session {{ effectiveSession.sessionId }}</span>
       </header>
 
       <div v-if="sourceVisible" class="dv__sourcepane">

@@ -22,7 +22,7 @@
  * carry the materialised metric (`type` + `timeBucket`, `total`,
  * `value`, …).
  */
-import { computed, ref, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useQuery } from '@tanstack/vue-query';
 import type {
@@ -31,10 +31,12 @@ import type {
   OalRulesResponse,
   OalSourcePayload,
   SessionRecord,
+  SessionResponse,
   SessionSample,
 } from '@vantage-studio/api-client';
 import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
+import { useDebugHistory, type HistoryEntry } from '../../composables/useDebugHistory.js';
 import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
@@ -42,6 +44,7 @@ import { isOalMetricsPayload, isOalSourcePayload, sampleTone } from './payload.j
 
 const route = useRoute();
 const dbg = useDebugSession('oal');
+const history = useDebugHistory('oal');
 /** OAL session install keys: `(catalog=oal, name=<file>, ruleName=<metric>)`.
  *  The picker's two refs map directly to that wire shape. The
  *  source-listing fetched from `/runtime/oal/rules` is shown
@@ -119,8 +122,75 @@ interface OalNodeView extends NodeSlice {
   groups: OalRecordGroup[];
 }
 
+// ── Historical replay ──────────────────────────────────────────────
+
+const historicalEntry = shallowRef<HistoryEntry | null>(null);
+
+const displaySession = computed<SessionResponse | null>(
+  () => historicalEntry.value?.session ?? dbg.session.value,
+);
+
+function loadHistorical(entry: HistoryEntry): void {
+  historicalEntry.value = entry;
+  selectedFile.value = entry.name;
+  selectedMetric.value = entry.ruleName;
+  if (entry.recordCap !== undefined) recordCap.value = entry.recordCap;
+  if (entry.retentionMillis !== undefined) {
+    retentionMinutes.value = Math.max(1, Math.round(entry.retentionMillis / 60_000));
+  }
+}
+
+function clearHistorical(): void {
+  historicalEntry.value = null;
+}
+
+function formatTime(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+watch(
+  () => dbg.state.value,
+  (next, prev) => {
+    if (historicalEntry.value !== null) return;
+    const isFinal = next === 'captured' || next === 'stopped';
+    const wasLive = prev === 'capturing' || prev === 'starting';
+    if (!isFinal || !wasLive) return;
+    const sess = dbg.session.value;
+    if (!sess || !selectedFile.value || !selectedMetric.value) return;
+    history.save({
+      widget: 'oal',
+      catalog: 'oal',
+      name: selectedFile.value,
+      ruleName: selectedMetric.value,
+      recordCap: recordCap.value,
+      retentionMillis: retentionMinutes.value * 60 * 1000,
+      recordCount: sess.nodes.reduce((n, x) => n + (x.records?.length ?? 0), 0),
+      nodeCount: sess.nodes.length,
+      session: sess,
+    });
+  },
+);
+
+watch(
+  () => route.query.historyId,
+  (id) => {
+    if (typeof id !== 'string' || id === '') {
+      if (historicalEntry.value !== null) clearHistorical();
+      return;
+    }
+    if (historicalEntry.value?.id === id) return;
+    const entry = history.entries.value.find((e) => e.id === id);
+    if (entry) loadHistorical(entry);
+  },
+  { immediate: true },
+);
+
 const nodeViews = computed<OalNodeView[]>(() => {
-  const s = dbg.session.value;
+  const s = displaySession.value;
   if (!s) return [];
   return s.nodes.map((n) => {
     const groups: OalRecordGroup[] = [];
@@ -161,7 +231,11 @@ function sourceSummary(p: OalSourcePayload): string {
 </script>
 
 <template>
-  <DebugView :dbg="dbg" :node-views="nodeViews">
+  <DebugView
+    :dbg="dbg"
+    :node-views="nodeViews"
+    :view-session="historicalEntry?.session ?? null"
+  >
     <template #controls>
       <div class="ctl">
         <label class="ctl__lbl">file</label>
@@ -192,11 +266,27 @@ function sourceSummary(p: OalSourcePayload): string {
       <Btn kind="primary" :disabled="!startEnabled" @click="startSampling">start sampling</Btn>
       <Btn kind="ghost" :disabled="!stopEnabled" @click="dbg.stop()">stop</Btn>
       <router-link
+        class="ctl__editlink"
+        to="/debug/history"
+        title="browse past captures saved locally"
+      >history ({{ history.entries.value.length }}) →</router-link>
+      <router-link
         v-if="selectedFile"
         class="ctl__editlink"
         :to="{ path: '/oal' }"
         :title="`browse the OAL files (read-only)`"
       >open in OAL catalog →</router-link>
+    </template>
+
+    <template #banner>
+      <div v-if="historicalEntry" class="oal__histbanner">
+        <span class="oal__histbicon">⟲</span>
+        <span>
+          viewing saved capture from <strong>{{ formatTime(historicalEntry.savedAt) }}</strong>
+          · {{ historicalEntry.catalog }} · {{ historicalEntry.name }} · {{ historicalEntry.ruleName }}
+        </span>
+        <button type="button" class="oal__histback" @click="clearHistorical">back to live</button>
+      </div>
     </template>
 
     <template #subhead>
@@ -536,5 +626,41 @@ function sourceSummary(p: OalSourcePayload): string {
 .oal__sourcefallback-hint {
   color: var(--rr-dim);
   font-style: italic;
+}
+
+.oal__histbanner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--rr-bg2);
+  border: 1px solid var(--rr-warn, #d6a96d);
+  border-left-width: 3px;
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-ink2);
+}
+
+.oal__histbicon {
+  color: var(--rr-warn, #d6a96d);
+  font-size: 16px;
+}
+
+.oal__histback {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--rr-border);
+  color: var(--rr-ink2);
+  font-family: var(--rr-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.oal__histback:hover {
+  color: var(--rr-heading);
+  border-color: var(--rr-ink2);
 }
 </style>
