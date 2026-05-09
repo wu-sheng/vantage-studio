@@ -15,7 +15,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { decodeEntityId, decodeMetricId } from '../src/views/debug/oalEntityId.js';
+import {
+  decodeEntityId,
+  decodeMetricEntityId,
+  decodeMetricId,
+} from '../src/views/debug/oalEntityId.js';
 
 /** Mirror IDManager so the fixtures stay close to OAP's actual
  *  encoding rules — easier to spot drift than hand-rolled expected
@@ -157,5 +161,28 @@ describe('decodeMetricId', () => {
 
   it('non-fixed-width bucket renders the raw digits', () => {
     expect(decodeMetricId('ServiceCpmMetrics', `12345_${svc('x', 1)}`)).toBe('12345 · x · real');
+  });
+});
+
+describe('decodeMetricEntityId', () => {
+  it('uses the metric class name to pick the entity scope', () => {
+    expect(decodeMetricEntityId('ServiceCpmMetrics', svc('checkout', 1))).toBe('checkout · real');
+    const ent = endpoint(svc('checkout', 1), '/api/orders');
+    expect(decodeMetricEntityId('EndpointRespTimeMetrics', ent)).toBe(
+      'checkout → /api/orders · real',
+    );
+  });
+
+  it('honours scope precedence (Relation classes beat their non-relation prefix)', () => {
+    const ent = `${svc('checkout', 1)}-${svc('catalog', 1)}`;
+    expect(decodeMetricEntityId('ServiceRelationServerCpmMetrics', ent)).toBe(
+      'checkout (real) → catalog (real)',
+    );
+  });
+
+  it('returns null on unrecognised metric type or missing input', () => {
+    expect(decodeMetricEntityId('FooMetrics', svc('x', 1))).toBeNull();
+    expect(decodeMetricEntityId(undefined, svc('x', 1))).toBeNull();
+    expect(decodeMetricEntityId('ServiceCpmMetrics', '')).toBeNull();
   });
 });

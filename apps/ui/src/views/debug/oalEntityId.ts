@@ -190,3 +190,17 @@ export function decodeMetricId(type: string | undefined, id: string): string | n
   const decoded = scope ? decodeEntityId(scope, entityRaw) : null;
   return decoded ? `${formatted} · ${decoded}` : formatted;
 }
+
+/** Decode the standalone `entityId` field on a metric payload. The
+ *  metric class name (e.g. `ServiceCpmMetrics`,
+ *  `ServiceRelationServerCpmMetrics`) tells us which entity scope
+ *  the value belongs to — same prefix lookup as `decodeMetricId`,
+ *  but applied to a bare entityId rather than a `<bucket>_<entityId>`
+ *  composite. Used by the OAL view to annotate metric rows where
+ *  the recorder serialises `entityId` alongside the storage `id`. */
+export function decodeMetricEntityId(type: string | undefined, id: string): string | null {
+  if (!type || !id) return null;
+  const scope = metricScopeOf(type);
+  if (!scope) return null;
+  return decodeEntityId(scope, id);
+}

@@ -41,7 +41,11 @@ import Btn from '../../design/primitives/Btn.vue';
 import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
 import { isOalMetricsPayload, isOalSourcePayload, sampleTone } from './payload.js';
-import { decodeEntityId, decodeMetricId } from './oalEntityId.js';
+import {
+  decodeEntityId,
+  decodeMetricEntityId,
+  decodeMetricId,
+} from './oalEntityId.js';
 
 const route = useRoute();
 const dbg = useDebugSession('oal');
@@ -269,14 +273,19 @@ function decodeAnnotation(type: string, k: string, v: string): string | null {
   return decodeEntityId(type, v);
 }
 
-/** Same idea for metric rows — the `id` field is the storage row id
- *  (`<timeBucket>_<entityId>`) so we surface the time bucket plus the
- *  inferred entity. The metric class name (e.g.
- *  `ServiceRelationServerCpmMetrics`) tells us which entity scope the
- *  trailing portion belongs to. */
+/** Same idea for metric rows. Two fields carry IDManager-encoded
+ *  shapes:
+ *  - `id` — storage row id (`<timeBucket>_<entityId>`); we surface
+ *    the time bucket plus the inferred entity.
+ *  - `entityId` — the standalone composite the metric joins on; the
+ *    metric class name (e.g. `ServiceCpmMetrics`,
+ *    `ServiceRelationServerCpmMetrics`) selects the scope so we can
+ *    decode this exactly like the source-side `entityId`.
+ *  Anything else returns null and renders without an annotation. */
 function decodeMetricAnnotation(type: string, k: string, v: string): string | null {
-  if (k !== 'id') return null;
-  return decodeMetricId(type, v);
+  if (k === 'id') return decodeMetricId(type, v);
+  if (k === 'entityId') return decodeMetricEntityId(type, v);
+  return null;
 }
 
 /** Same idea for the metrics payload — `type` is rendered out of band
