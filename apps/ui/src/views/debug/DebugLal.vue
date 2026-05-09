@@ -43,7 +43,6 @@ import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import { useDebugHistory, type HistoryEntry } from '../../composables/useDebugHistory.js';
 import Btn from '../../design/primitives/Btn.vue';
-import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
 import { isLalSamplePayload } from './payload.js';
 
@@ -230,13 +229,9 @@ function clearHistorical(): void {
 }
 
 watch(
-  () => dbg.state.value,
-  (next, prev) => {
+  () => dbg.session.value,
+  (sess) => {
     if (historicalEntry.value !== null) return;
-    const isFinal = next === 'captured' || next === 'stopped';
-    const wasLive = prev === 'capturing' || prev === 'starting';
-    if (!isFinal || !wasLive) return;
-    const sess = dbg.session.value;
     if (!sess || !selectedFile.value || !selectedRule.value) return;
     history.save({
       widget: 'lal',

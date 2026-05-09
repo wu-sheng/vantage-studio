@@ -38,14 +38,8 @@ import { bff } from '../../api/client.js';
 import { useDebugSession } from '../../composables/useDebugSession.js';
 import { useDebugHistory, type HistoryEntry } from '../../composables/useDebugHistory.js';
 import Btn from '../../design/primitives/Btn.vue';
-import Pill from '../../design/primitives/Pill.vue';
 import DebugView from './DebugView.vue';
-import {
-  isMalOutputPayload,
-  isMalSamplesPayload,
-  sampleTone,
-  shortHash,
-} from './payload.js';
+import { isMalOutputPayload, isMalSamplesPayload, shortHash } from './payload.js';
 
 interface RuleOption {
   catalog: Catalog;
@@ -305,21 +299,19 @@ watch(
   { immediate: true },
 );
 
-/** Auto-save on capture-end. We watch state transitions: when a live
- *  capture moves from `capturing` → `captured` / `stopped`, snapshot
- *  the session into local history. Skipped while replaying history
- *  (start/stop still works through the live composable, but the
- *  watch fires off the live `dbg.state`). */
+/** Auto-save during capture. The composable replaces `session` on
+ *  every poll (1×/s while capturing); we mirror it into history with
+ *  upsert-by-sessionId so the operator can browse a still-running
+ *  capture from the history page without waiting for stop. The
+ *  composable skips localStorage writes when nothing meaningful
+ *  changed, so this is cheap. Skipped while replaying history. */
 watch(
-  () => dbg.state.value,
-  (next, prev) => {
+  () => dbg.session.value,
+  (sess) => {
     if (historicalEntry.value !== null) return;
-    const isFinal = next === 'captured' || next === 'stopped';
-    const wasLive = prev === 'capturing' || prev === 'starting';
-    if (!isFinal || !wasLive) return;
-    const sess = dbg.session.value;
+    if (!sess) return;
     const rule = selectedRule.value;
-    if (!sess || !rule || !selectedMetric.value) return;
+    if (!rule || !selectedMetric.value) return;
     history.save({
       widget: 'mal',
       catalog: rule.catalog,
@@ -367,16 +359,6 @@ const nodeViews = computed<MalNodeView[]>(() => {
 
 function nodeKey(n: NodeSlice): string {
   return n.nodeId ?? n.peer ?? '?';
-}
-
-/** Surface the sample-family count concisely. */
-function summariseSamples(p: MalSamplesPayload | null): string {
-  if (!p) return '—';
-  if (p.empty === true) return 'empty family';
-  const parts: string[] = [];
-  if (p.families !== undefined) parts.push(`${p.families} families`);
-  if (p.samples !== undefined) parts.push(`${p.samples} samples`);
-  return parts.length > 0 ? parts.join(' · ') : '—';
 }
 
 function formatTime(ms: number): string {

@@ -153,13 +153,9 @@ function formatTime(ms: number): string {
 }
 
 watch(
-  () => dbg.state.value,
-  (next, prev) => {
+  () => dbg.session.value,
+  (sess) => {
     if (historicalEntry.value !== null) return;
-    const isFinal = next === 'captured' || next === 'stopped';
-    const wasLive = prev === 'capturing' || prev === 'starting';
-    if (!isFinal || !wasLive) return;
-    const sess = dbg.session.value;
     if (!sess || !selectedFile.value || !selectedMetric.value) return;
     history.save({
       widget: 'oal',

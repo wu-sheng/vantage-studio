@@ -112,14 +112,48 @@ export function useDebugHistory(widget: DebugWidget): DebugHistoryHandle {
   );
   const all = computed(() => store.value.slice().sort((a, b) => b.savedAt - a.savedAt));
 
+  /** Upsert by (widget, session.sessionId). When an entry for the
+   *  same live session already exists, refresh its session snapshot
+   *  + counts in place; the original `id` and `savedAt` (capture-start
+   *  time) are preserved so deep-links stay stable across polls. When
+   *  nothing meaningful changed (same recordCount/nodeCount), the
+   *  write is skipped — capture polls 1×/s and we don't want to
+   *  serialize 100s of KB to localStorage every tick. */
   function save(input: Omit<HistoryEntry, 'id' | 'savedAt'>): HistoryEntry {
+    const idx = store.value.findIndex(
+      (e) => e.widget === input.widget && e.session.sessionId === input.session.sessionId,
+    );
+    if (idx >= 0) {
+      const existing = store.value[idx]!;
+      if (existing.recordCount === input.recordCount && existing.nodeCount === input.nodeCount) {
+        return existing;
+      }
+      const updated: HistoryEntry = {
+        ...existing,
+        ...input,
+        id: existing.id,
+        savedAt: existing.savedAt,
+      };
+      const next = store.value.slice();
+      next[idx] = updated;
+      store.value = next;
+      writeAll(next);
+      return updated;
+    }
     const entry: HistoryEntry = {
       ...input,
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
       savedAt: Date.now(),
     };
     let next = [entry, ...store.value];
-    if (next.length > MAX_ENTRIES) next = next.slice(0, MAX_ENTRIES);
+    // Cap PER widget so a busy MAL session never evicts saved LAL /
+    // OAL captures. Walk the same-widget slice newest-first; drop any
+    // that fall past MAX_ENTRIES.
+    const sameWidget = next.filter((e) => e.widget === entry.widget);
+    if (sameWidget.length > MAX_ENTRIES) {
+      const dropIds = new Set(sameWidget.slice(MAX_ENTRIES).map((e) => e.id));
+      next = next.filter((e) => !dropIds.has(e.id));
+    }
     store.value = next;
     writeAll(next);
     return entry;
