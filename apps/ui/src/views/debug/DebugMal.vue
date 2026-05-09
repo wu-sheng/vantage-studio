@@ -65,7 +65,10 @@ const dbg = useDebugSession('mal');
  *  drilled out of the file's YAML body. */
 const selectedKey = ref<string>('');
 const selectedMetric = ref<string>('');
-const recordCap = ref<number>(1000);
+// Default 100 records / session — small enough to keep BFF + OAP
+// memory bounded for casual debugging; operators can dial up to
+// 10 000 (upstream's hard cap) for longer captures.
+const recordCap = ref<number>(100);
 const retentionMinutes = ref<number>(5);
 
 /** Deep-link from a MAL rule card / catalog entry — `?catalog=&name=`

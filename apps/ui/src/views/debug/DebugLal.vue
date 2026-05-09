@@ -57,7 +57,10 @@ const dbg = useDebugSession('lal');
 const selectedFile = ref<string>('');
 const selectedRule = ref<string>('');
 const granularity = ref<Granularity>('block');
-const recordCap = ref<number>(1000);
+// Default 100 records / session — small enough to keep BFF + OAP
+// memory bounded for casual debugging; operators can dial up to
+// 10 000 (upstream's hard cap) for longer captures.
+const recordCap = ref<number>(100);
 const retentionMinutes = ref<number>(5);
 
 /** Deep-link from a LAL rule card / Monaco gutter — `?file=&name=`
