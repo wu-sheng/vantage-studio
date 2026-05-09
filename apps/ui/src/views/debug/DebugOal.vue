@@ -263,28 +263,38 @@ function sourceFields(p: OalSourcePayload): OalKv[] {
   return out;
 }
 
-/** Decoded annotation for a source field — only `entityId` carries
- *  the composite IDManager shape; everything else returns null and
- *  the template skips the parenthetical. The OAL source class
- *  (`OalSourcePayload.type`, e.g. `Service`, `Endpoint`,
- *  `ServiceRelation`) selects the right per-scope decoder. */
+/** True when the field name carries an IDManager-encoded entity id.
+ *  Sources override `toJson()` by hand and emit camelCase
+ *  (`entityId`); generated OAL Metrics classes use the storage
+ *  column name (`entity_id`) via the codegen's `appendDebugFields`
+ *  template — both spellings appear on the wire. */
+function isEntityIdKey(k: string): boolean {
+  return k === 'entityId' || k === 'entity_id';
+}
+
+/** Decoded annotation for a source field — only `entityId` /
+ *  `entity_id` carries the composite IDManager shape; everything
+ *  else returns null and the template skips the parenthetical. The
+ *  OAL source class (`OalSourcePayload.type`, e.g. `Service`,
+ *  `Endpoint`, `ServiceRelation`) selects the right per-scope
+ *  decoder. */
 function decodeAnnotation(type: string, k: string, v: string): string | null {
-  if (k !== 'entityId') return null;
+  if (!isEntityIdKey(k)) return null;
   return decodeEntityId(type, v);
 }
 
-/** Same idea for metric rows. Two fields carry IDManager-encoded
- *  shapes:
+/** Same idea for metric rows. Two field shapes carry IDManager-
+ *  encoded values:
  *  - `id` — storage row id (`<timeBucket>_<entityId>`); we surface
  *    the time bucket plus the inferred entity.
- *  - `entityId` — the standalone composite the metric joins on; the
- *    metric class name (e.g. `ServiceCpmMetrics`,
+ *  - `entityId` / `entity_id` — the standalone composite the metric
+ *    joins on; the metric class name (e.g. `ServiceCpmMetrics`,
  *    `ServiceRelationServerCpmMetrics`) selects the scope so we can
  *    decode this exactly like the source-side `entityId`.
  *  Anything else returns null and renders without an annotation. */
 function decodeMetricAnnotation(type: string, k: string, v: string): string | null {
   if (k === 'id') return decodeMetricId(type, v);
-  if (k === 'entityId') return decodeMetricEntityId(type, v);
+  if (isEntityIdKey(k)) return decodeMetricEntityId(type, v);
   return null;
 }
 
