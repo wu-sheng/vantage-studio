@@ -34,8 +34,6 @@ WORKDIR /workspace
 # Workspace + lock first for cache reuse on source-only edits.
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY tsconfig.base.json tsconfig.json ./
-COPY scripts ./scripts
-COPY LICENSE-HEADER.txt ./
 COPY apps/bff/package.json apps/bff/
 COPY apps/ui/package.json apps/ui/
 COPY packages/api-client/package.json packages/api-client/
