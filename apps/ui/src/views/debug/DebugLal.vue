@@ -179,9 +179,15 @@ interface LalStep {
   type: SampleType;
   /** 1-based DSL line in statement mode; 0 for block-level samples. */
   sourceLine: number;
-  /** Display label — sample type for input/output, or `function@LINE`
-   *  for statement-mode functions. */
-  label: string;
+  /** Sample-type kicker — `input` / `function` / `output`, used as
+   *  the row's small uppercase header. */
+  kindLabel: string;
+  /** Optional secondary line: in statement-mode this carries the
+   *  verbatim DSL slice for function samples (`tag stage: 'extractor'`,
+   *  …) so each row reads as the operation it actually performs. Empty
+   *  for input/output and for block-mode functions where the
+   *  recorder doesn't supply a per-statement fragment. */
+  nameLabel: string;
 }
 
 interface LalRecordView {
@@ -308,11 +314,21 @@ const nodeViews = computed<LalNodeView[]>(() => {
         if (!seen.has(key)) {
           seen.add(key);
           const sourceLine = sample.sourceLine ?? 0;
-          const label =
+          const txt = sample.sourceText.trim();
+          // In statement-mode every function sample carries its
+          // verbatim DSL slice; surface that as the row's name so
+          // operators see "tag stage: 'extractor'" instead of a
+          // generic "function". Long slices are truncated; the
+          // line number lives in the kicker line.
+          const nameLabel =
+            sample.type === 'function' && txt.length > 0
+              ? txt.length > 60 ? `${txt.slice(0, 57)}…` : txt
+              : '';
+          const kindLabel =
             sample.type === 'function' && sourceLine > 0
               ? `function @${sourceLine}`
               : sample.type;
-          steps.push({ key, type: sample.type, sourceLine, label });
+          steps.push({ key, type: sample.type, sourceLine, kindLabel, nameLabel });
         }
         let perRec = cells.get(key);
         if (!perRec) {
@@ -707,7 +723,8 @@ void TAG_STATUS_TONE;
           class="lal__solorow"
         >
           <header class="lal__solorowh">
-            <span class="lal__stepkind">{{ step.label }}</span>
+            <span class="lal__stepkind">{{ step.kindLabel }}</span>
+            <code v-if="step.nameLabel" class="lal__solorowname">{{ step.nameLabel }}</code>
           </header>
           <template v-if="cellAt(node, step, expandedRecordView(node)!.recIdx) === undefined">
             <div class="lal__cellabsent">— no sample for this step in this record</div>
@@ -824,7 +841,10 @@ void TAG_STATUS_TONE;
           <!-- step rows -->
           <template v-for="step in node.steps" :key="step.key">
             <div class="lal__steplbl">
-              <div class="lal__stepkind">{{ step.label }}</div>
+              <div class="lal__stepkind">{{ step.kindLabel }}</div>
+              <div v-if="step.nameLabel" class="lal__stepname">
+                <code>{{ step.nameLabel }}</code>
+              </div>
               <div class="lal__stepct">
                 {{ displayedRecords(node).filter((rv) => cellAt(node, step, rv.recIdx) !== undefined).length }}
                 / {{ displayedRecords(node).length }} records
@@ -1185,10 +1205,35 @@ void TAG_STATUS_TONE;
 }
 
 .lal__stepkind {
-  color: var(--rr-heading);
-  font-size: 12px;
-  letter-spacing: 0.4px;
+  color: var(--rr-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
   text-transform: uppercase;
+}
+
+.lal__stepname {
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  color: var(--rr-heading);
+  word-break: break-word;
+  line-height: 1.3;
+}
+
+.lal__stepname code {
+  font-family: var(--rr-font-mono);
+  background: transparent;
+  padding: 0;
+}
+
+.lal__solorowname {
+  font-family: var(--rr-font-mono);
+  font-size: 12px;
+  color: var(--rr-ink);
+  background: var(--rr-bg2);
+  padding: 1px 6px;
+  margin-left: 8px;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .lal__stepct {
