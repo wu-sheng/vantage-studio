@@ -571,11 +571,12 @@ function matchedRecordCount(view: LalNodeView): number {
 
 // ── Optional source panel with per-line hooks ──────────────────────
 
-/** Toggles the verbatim DSL panel next to the matrix. Hidden by
- *  default — operators usually stare at the cells and only need the
- *  source for cross-reference when a particular statement is
- *  surprising. */
-const sourcePanelOpen = ref<boolean>(false);
+/** Toggles the verbatim DSL panel next to the matrix. On by default —
+ *  the source-to-step mapping is the most useful cross-reference for
+ *  statement-mode rules, so the operator sees both surfaces side by
+ *  side without an extra click. The toggle button lives at the top-
+ *  right of the matrix area so it stays close to what it controls. */
+const sourcePanelOpen = ref<boolean>(true);
 
 /** Captured DSL — pulled from the latest displayed record on the
  *  first node. All records in a session share the same `dsl` (the
@@ -803,15 +804,6 @@ void TAG_STATUS_TONE;
             class="lal__limitinput"
           />
         </label>
-        <button
-          type="button"
-          class="lal__srctogglebtn"
-          :class="{ 'lal__srctogglebtn--on': sourcePanelOpen }"
-          :disabled="sourceDslLines.length === 0"
-          @click="sourcePanelOpen = !sourcePanelOpen"
-        >
-          {{ sourcePanelOpen ? 'hide source' : 'show source' }}
-        </button>
       </div>
     </template>
 
@@ -946,7 +938,19 @@ void TAG_STATUS_TONE;
       </div>
 
       <!-- Default: per-record × per-block matrix. -->
-      <div v-else class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
+      <div v-else class="lal__matrixblock">
+        <header class="lal__matrixhead">
+          <button
+            type="button"
+            class="lal__srctogglebtn"
+            :class="{ 'lal__srctogglebtn--on': sourcePanelOpen }"
+            :disabled="sourceDslLines.length === 0"
+            @click="sourcePanelOpen = !sourcePanelOpen"
+          >
+            {{ sourcePanelOpen ? 'hide source' : 'show source' }}
+          </button>
+        </header>
+        <div class="lal__matrixrow" :class="{ 'lal__matrixrow--withsrc': sourcePanelOpen && sourceDslLines.length > 0 }">
         <aside
           v-if="sourcePanelOpen && sourceDslLines.length > 0"
           class="lal__sourcepane"
@@ -1119,6 +1123,7 @@ void TAG_STATUS_TONE;
           </template>
         </div>
         </div>
+        </div>
       </div>
     </template>
   </DebugView>
@@ -1191,6 +1196,19 @@ void TAG_STATUS_TONE;
   font-size: 15px;
   color: var(--rr-dim);
   font-style: italic;
+}
+
+.lal__matrixblock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lal__matrixhead {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 0 2px;
 }
 
 .lal__matrixrow {
@@ -1303,7 +1321,6 @@ void TAG_STATUS_TONE;
 }
 
 .lal__srctogglebtn {
-  margin-left: auto;
   background: transparent;
   border: 1px solid var(--rr-border);
   color: var(--rr-ink2);
