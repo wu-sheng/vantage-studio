@@ -146,20 +146,6 @@ OAP runs locally on `:17128` (admin-server), bound by
   `RECORD_CAP_MAX` plus UI-only knobs (`DEFAULT_RETENTION_MINUTES`,
   `MS_PER_MINUTE`).
 
-## State of the project (as of v0.1.0)
-
-- Live debugger (MAL / LAL / OAL) is the most-iterated surface;
-  see commits since `cd74bb9` for the design history. Don't
-  re-introduce the deleted `DebugSourcePane.vue` / `useRuleSource`
-  / `sourceMatch.ts` chain — they were the legacy file-fetch +
-  line-match path; the canonical surface is the per-DSL view's
-  own in-grid foldable DSL pane (LAL especially, with line hooks).
-- Capture history is browser-local only (`vs:debug-history:v1` in
-  `localStorage`, capped 20 entries per widget). No server-side
-  persistence; `useDebugHistory` is the singleton.
-- LDAP / OIDC, restore-from-bundle, OAL hot-update, and rule
-  history/diff/rollback are all intentionally **deferred**.
-
 ## Useful files when investigating
 
 - Wire types: `packages/api-client/src/dsl-debugging.ts`
