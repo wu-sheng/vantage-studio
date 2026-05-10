@@ -94,14 +94,15 @@ jobs:
       - name: Compose image tags
         id: tags
         run: |
-          tags="${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}"
-          tags="${tags}\n${{ steps.meta.outputs.image }}:sha-${{ github.sha }}"
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            tags="${tags}\n${{ steps.meta.outputs.image }}:main"
-          fi
+          # Tagging policy: commit-id per main push, version tag per
+          # release (release.yml). Anything else (full SHA, rolling
+          # `:main`) is redundant — the operator workflow that wants
+          # the rolling tip uses `git log` then `:sha-<short>`, and
+          # the full-SHA + commit metadata is in OCI labels +
+          # SLSA provenance attestation already.
           {
             echo 'tags<<EOF'
-            printf '%b\n' "$tags"
+            printf '%s\n' "${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}"
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
