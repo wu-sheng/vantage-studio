@@ -67,10 +67,10 @@ docs/                 Operator-facing markdown (install / auth /
   ```
 - The local checkout at `~/github/skywalking` is the source of
   truth for the wire shape. Branch `feature/runtime-rule-hot-update`
-  + the `dsl-debugging-terminal-value-and-cap` branch carry the
-  current recorder code; consult these when wire shapes are
-  ambiguous (e.g. `MalOutputPayload.value` shape, IDManager id
-  format, `SessionLimits` caps).
+  - the `dsl-debugging-terminal-value-and-cap` branch carry the
+    current recorder code; consult these when wire shapes are
+    ambiguous (e.g. `MalOutputPayload.value` shape, IDManager id
+    format, `SessionLimits` caps).
 
 ## Conventions
 
@@ -79,7 +79,7 @@ docs/                 Operator-facing markdown (install / auth /
 - Style: `type(scope): subject` lower-case, present tense.
   Examples: `feat(debug-mal): …`, `fix(debug-lal): …`,
   `docs(release): …`, `ci: …`, `chore: …`.
-- Body: explain *why*, not *what*. Reference upstream files /
+- Body: explain _why_, not _what_. Reference upstream files /
   line numbers when applicable.
 - **Do not add a `Co-Authored-By: Claude` trailer to commits.**
   The maintainer is the sole author of record on this repo.
