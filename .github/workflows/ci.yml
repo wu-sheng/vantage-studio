@@ -87,22 +87,18 @@ jobs:
         run: |
           owner_repo="${{ github.repository }}"
           owner_repo_lc="${owner_repo,,}"
-          short_sha="${GITHUB_SHA::7}"
           echo "image=ghcr.io/${owner_repo_lc}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Compose image tags
         id: tags
         run: |
-          # Tagging policy: commit-id per main push, version tag per
-          # release (release.yml). Anything else (full SHA, rolling
-          # `:main`) is redundant — the operator workflow that wants
-          # the rolling tip uses `git log` then `:sha-<short>`, and
-          # the full-SHA + commit metadata is in OCI labels +
-          # SLSA provenance attestation already.
+          # Tagging policy: commit-id per main push (full 40-char
+          # SHA, no `sha-` prefix), version tag per release tag
+          # (handled by release.yml). The full SHA and commit
+          # metadata are also in OCI labels +  SLSA provenance.
           {
             echo 'tags<<EOF'
-            printf '%s\n' "${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}"
+            printf '%s\n' "${{ steps.meta.outputs.image }}:${{ github.sha }}"
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
