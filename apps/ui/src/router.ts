@@ -68,6 +68,13 @@ const routes: RouteRecordRaw[] = [
     meta: { layout: 'main', requiresAuth: true },
   },
   {
+    /* SWIP-14 Inspect — proposal page is currently static / mocked. */
+    path: '/inspect',
+    name: 'inspect',
+    component: () => import('./views/Inspect.vue'),
+    meta: { layout: 'main', requiresAuth: true },
+  },
+  {
     /* /debug                → defaults to MAL tab.
      * /debug/{mal|lal|oal}  → preselects the named tab; query params
      *                         (file, name, ruleName, source, …) flow

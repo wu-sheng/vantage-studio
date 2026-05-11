@@ -213,15 +213,21 @@ export function registerOapRoutes(app: FastifyInstance, deps: OapRouteDeps): voi
       if (!q.name) return reply.code(400).send({ error: 'missing_name' });
       const mode = parseDeleteMode(q.mode, reply);
       if (mode === null) return;
-      if (!ensureVerb(req, reply, deps, 'rule:delete')) return;
+      /* `mode=revertToBundled` is a structural change — it swaps the
+       * active row's identity back to the bundled twin, the same
+       * write-class that `rule:write:structural` already gates on
+       * the addOrUpdate path. A caller with only `rule:delete`
+       * must not be able to revert. */
+      const verb = mode === 'revertToBundled' ? 'rule:write:structural' : 'rule:delete';
+      if (!ensureVerb(req, reply, deps, verb)) return;
       try {
         const result = await clients().primary().delete(catalog, q.name, mode);
-        auditMutation(deps, req, 'delete', 'rule:delete', catalog, q.name, result.applyStatus, {
+        auditMutation(deps, req, 'delete', verb, catalog, q.name, result.applyStatus, {
           mode,
         });
         return reply.send(result);
       } catch (err) {
-        return passOapErrorAudit(err, reply, deps, req, 'delete', 'rule:delete', catalog, q.name, {
+        return passOapErrorAudit(err, reply, deps, req, 'delete', verb, catalog, q.name, {
           mode,
         });
       }

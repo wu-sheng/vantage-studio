@@ -255,6 +255,12 @@ function submitNewRule(): void {
       </h1>
       <Pill v-if="ruleCount > 0" tone="dim">{{ ruleCount }} rules</Pill>
       <Pill v-if="bundledCount > 0" tone="dim">{{ bundledCount }} bundled</Pill>
+      <Btn
+        size="sm"
+        :disabled="isPending"
+        title="re-pull this catalog from OAP"
+        @click="refetch()"
+      >{{ isPending ? 'refreshing…' : 'refresh' }}</Btn>
       <span v-if="isWritableCatalog" class="catalog__newslot">
         <Btn
           v-if="!showNewForm"

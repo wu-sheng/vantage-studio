@@ -25,6 +25,7 @@ import { useRouter } from 'vue-router';
 import { useQuery } from '@tanstack/vue-query';
 import { bff } from '../api/client.js';
 import Pill from '../design/primitives/Pill.vue';
+import Btn from '../design/primitives/Btn.vue';
 import { tokenizeLine, type Token } from './syntaxHighlight.js';
 
 const router = useRouter();
@@ -127,6 +128,12 @@ const fileLines = computed<FileLine[]>(() => {
     <header class="oal__header">
       <h1 class="oal__h1">OAL catalog</h1>
       <Pill tone="dim">read-only</Pill>
+      <Btn
+        size="sm"
+        :disabled="filesQuery.isFetching.value"
+        title="re-pull /runtime/oal/files"
+        @click="filesQuery.refetch()"
+      >{{ filesQuery.isFetching.value ? 'refreshing…' : 'refresh' }}</Btn>
       <span class="oal__hint">
         OAL hot-update is upstream-deferred. Each <code>.oal</code> file
         defines source classes (the input row the analyzer emits, e.g.

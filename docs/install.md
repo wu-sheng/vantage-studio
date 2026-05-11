@@ -58,21 +58,32 @@ branch. Build it from a checkout of `apache/skywalking`
 The minimum SkyWalking version is **10.5.0** — see
 [`compatibility.md`](compatibility.md).
 
-### OAP enablement — three opt-in selectors
+### OAP enablement — four required selectors
 
-All three SWIP-13 selectors default to **empty (disabled)**. Set the
-following env vars on the OAP container so the surfaces Studio uses
-come up:
+Studio's BFF only talks to admin-server-bound OAP modules. All four
+selectors default to **empty (disabled)** in stock OAP; Studio
+**requires all four**. Set them on the OAP container:
 
 ```env
-SW_ADMIN_SERVER=default          # shared HTTP server on :17128
+SW_ADMIN_SERVER=default          # shared HTTP server on :17128 (host module for the others)
 SW_RECEIVER_RUNTIME_RULE=default # /runtime/rule/* + /runtime/oal/*
 SW_DSL_DEBUGGING=default         # /dsl-debugging/* live debugger
+SW_INSPECT=default               # /inspect/* — catalog + entity browser (SWIP-14)
 ```
 
-Without `admin-server`, the runtime-rule and dsl-debugging modules
-fail at boot with `ModuleNotFoundException: admin-server`. Enable
-all three together.
+What breaks if you omit each one:
+
+| Selector                   | What stops working in Studio                                                                                                                                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SW_ADMIN_SERVER`          | Everything. Without the host module, the other three fail at boot with `ModuleNotFoundException: admin-server`.                                                                                                                                             |
+| `SW_RECEIVER_RUNTIME_RULE` | DSL Management pages (Catalog, OAL catalog), the Editor's rule fetch/save path, the Cluster status rule-convergence matrix, the Live debugger's rule picker, and the Inspect drawer's source attribution (every metric falls back to the `unknown` bucket). |
+| `SW_DSL_DEBUGGING`         | The Live debugger across all three DSLs (start / poll / stop), and the DSL-debugging health pane in Cluster status.                                                                                                                                         |
+| `SW_INSPECT`               | The Inspect page — every `/api/inspect/*` call returns `404 inspect_not_enabled` and the page renders an actionable banner instead of the board.                                                                                                            |
+
+The "Backend unreachable" / `oap_unreachable` banners you see in
+Studio when a selector is missing are honest reports — Studio is
+running fine, the upstream just isn't exposing the path. Set the
+selector + restart OAP and the page recovers on the next poll.
 
 > The admin-server has **no authentication** in this release. Reach
 > it only over the cluster's private network — never expose port

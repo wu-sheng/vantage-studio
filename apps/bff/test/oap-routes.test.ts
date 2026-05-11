@@ -385,7 +385,7 @@ describe('OAP route — /api/rule/inactivate + /delete', () => {
     expect(ctx.audit.events.find((e) => e.action === 'inactivate')).toBeTruthy();
   });
 
-  it('delete passes mode=revertToBundled through', async () => {
+  it('delete passes mode=revertToBundled through, gates on rule:write:structural', async () => {
     ctx = await makeApp({
       delete: () =>
         jsonResponse({
@@ -404,6 +404,66 @@ describe('OAP route — /api/rule/inactivate + /delete', () => {
     expect(ctx.oapCalls[0]!.url).toContain('mode=revertToBundled');
     const audit = ctx.audit.events.find((e) => e.action === 'delete')!;
     expect(audit.details).toMatchObject({ mode: 'revertToBundled' });
+    expect(audit.verb).toBe('rule:write:structural');
+  });
+
+  it('delete mode=revertToBundled is denied for a role with only rule:delete', async () => {
+    /* `revertToBundled` is the structural equivalent of an
+     * addOrUpdate-with-allowStorageChange; the verb table reserves
+     * `rule:write:structural` for those. A reader-style role with
+     * just `rule:delete` must not be able to revert. */
+    ctx = await makeApp(
+      {
+        delete: () =>
+          jsonResponse({
+            applyStatus: 'no_change',
+            catalog: 'lal',
+            name: 'envoy-als',
+            message: '',
+          }),
+      },
+      { rbac: true },
+    );
+    // Re-login as the `reader` role (rule:read + cluster:read only — no delete, no structural).
+    // The default `makeApp` user is `admin` with `*`; we need a separate session.
+    const cfg = makeConfig({
+      users: [{ username: 'reader', passwordHash: '$argon2id$pretend', roles: ['reader'] }],
+      rbac: {
+        enabled: true,
+        roles: {
+          reader: { verbs: ['rule:read', 'rule:delete', 'cluster:read'] },
+        },
+      },
+    });
+    const config = staticConfig(cfg);
+    const audit = createMemoryAuditLogger();
+    const { fetch } = makeFetch({
+      delete: () =>
+        jsonResponse({ applyStatus: 'no_change', catalog: 'lal', name: 'envoy-als', message: '' }),
+    });
+    const built = await buildServer({
+      config,
+      audit,
+      loggerOptions: false,
+      verifyDeps: { verify: async () => true },
+      oapFetch: fetch,
+    });
+    const login = await built.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'reader', password: 'pw' },
+    });
+    const setCookie = login.headers['set-cookie'];
+    const cookieStr = Array.isArray(setCookie) ? setCookie.join('; ') : (setCookie as string);
+    const sid = /sid=([^;]+)/.exec(cookieStr)![1]!;
+    const r = await built.app.inject({
+      method: 'POST',
+      url: '/api/rule/delete?catalog=lal&name=envoy-als&mode=revertToBundled',
+      headers: { cookie: `sid=${sid}` },
+    });
+    expect(r.statusCode).toBe(403);
+    expect(r.json()).toMatchObject({ error: 'permission_denied', verb: 'rule:write:structural' });
+    await built.app.close();
   });
 
   it('delete with invalid mode rejects 400 without calling OAP', async () => {

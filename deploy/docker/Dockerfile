@@ -55,6 +55,15 @@ RUN pnpm -F @vantage-studio/ui build && \
 # is required on pnpm 10+ for non-injected workspaces.
 RUN pnpm deploy --filter @vantage-studio/bff --prod --legacy /deploy
 
+# Seed an empty /data with nonroot (65532:65532) ownership. The runtime
+# stage copies this in. Docker auto-seeds named volumes from the
+# image's directory contents (including ownership) on first mount, so
+# `studio-data:/data` ends up writable by the BFF without operator-side
+# chown. The `.keep` file is required because Docker's named-volume
+# seeding ignores entirely empty directories.
+RUN install -d -o 65532 -g 65532 -m 0750 /seed-data && \
+    install -m 0640 -o 65532 -g 65532 /dev/null /seed-data/.keep
+
 # ── runtime ────────────────────────────────────────────────────────
 FROM gcr.io/distroless/nodejs24-debian12:nonroot AS runtime
 WORKDIR /app
@@ -69,6 +78,10 @@ COPY --from=builder /deploy/node_modules ./node_modules
 # SPA static bundle + first-run config seed.
 COPY --from=builder /workspace/apps/ui/dist ./ui
 COPY deploy/docker/studio.yaml.example ./studio.yaml.example
+
+# /data pre-owned by nonroot (65532:65532). On first `docker volume`
+# mount this ownership is propagated to the named volume.
+COPY --from=builder /seed-data /data
 
 ENV NODE_ENV=production
 ENV STUDIO_CONFIG=/data/studio.yaml

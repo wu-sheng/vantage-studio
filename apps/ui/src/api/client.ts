@@ -30,8 +30,13 @@ import type {
   Catalog,
   DeleteMode,
   DslDebuggingStatus,
+  EntitiesResponse,
+  ExpressionResult,
+  InspectExecRequest,
+  InspectStep,
   ListEnvelope,
   LocalState,
+  MetricRow,
   OalFilesResponse,
   OalRulesResponse,
   OalSourceDetail,
@@ -78,6 +83,72 @@ export interface ClusterStateResponse {
   generatedAt: number;
   nodes: { url: string; ok: boolean; error?: string }[];
   rules: ClusterRule[];
+}
+
+/**
+ * BFF-only response shape for `/api/inspect/server-time`. Kept in
+ * sync by hand with `apps/bff/src/oap/server-time.ts`.
+ */
+export interface InspectServerTimeResponse {
+  offsetMinutes: number;
+  currentTimestampMillis: number;
+  source: 'oap' | 'fallback';
+  mqeBaseUrl?: string;
+  error?: string;
+}
+
+/**
+ * BFF-only response shape for `/api/preflight`. Kept in sync by hand
+ * with `apps/bff/src/oap/preflight.ts`.
+ */
+export interface PreflightModule {
+  name: string;
+  envVar: string;
+  required: boolean;
+  enabled: boolean;
+  affects: string;
+}
+
+export interface PreflightResponse {
+  adminUrl: string;
+  adminReachable: boolean;
+  adminError?: string;
+  modules: PreflightModule[];
+  dumpKeyCount: number;
+  generatedAt: number;
+}
+
+/**
+ * BFF-only response shape for `/api/inspect/catalog` — `/inspect/metrics`
+ * with the Studio-side rule attribution joined in. Kept in sync by
+ * hand with `apps/bff/src/oap/inspect-routes.ts`.
+ */
+export interface InspectCatalogEntry extends MetricRow {
+  attribution: {
+    source: 'OAL' | 'MAL·OTEL' | 'MAL·Telegraf' | 'LAL→MAL' | 'unknown';
+    file: string | null;
+    candidates?: string[];
+  };
+}
+
+export interface InspectCatalogResponse {
+  metrics: InspectCatalogEntry[];
+  /** Per-source counts for the toolbar summary. */
+  summary: Record<string, number>;
+  /** Fingerprint that bumps whenever the underlying rule set changes. */
+  attributionFingerprint: string;
+}
+
+/**
+ * BFF-only response shape for `/api/inspect/mqe-target` — discovered
+ * (or operator-overridden) base URL the BFF uses to fire MQE
+ * `execExpression` mutations. Echoed back to the UI for the MQE-target
+ * panel.
+ */
+export interface InspectMqeTargetResponse {
+  baseUrl: string;
+  via: string;
+  configured: { host?: string; port?: number };
 }
 
 export interface BffMe {
@@ -358,6 +429,62 @@ export class BffClient {
    *  snapshot (BFF fan-out). */
   async debugStatus(): Promise<ClusterDebugStatus> {
     return this.request<ClusterDebugStatus>('GET', '/api/debug/status');
+  }
+
+  // ── SWIP-14 Inspect ─────────────────────────────────────────────
+
+  /** `GET /api/inspect/catalog[?refresh=true]` — `/inspect/metrics`
+   *  with Studio's rule-file attribution joined in. The catalog
+   *  drawer hits this. Pass `refresh=true` to bust the BFF-side
+   *  attribution cache (e.g. after a rule edit). */
+  async inspectCatalog(refresh = false): Promise<InspectCatalogResponse> {
+    const path = refresh ? '/api/inspect/catalog?refresh=true' : '/api/inspect/catalog';
+    return this.request<InspectCatalogResponse>('GET', path);
+  }
+
+  /** `GET /api/inspect/entities?metric=…&start=…&end=…&step=…[&limit=]`. */
+  async inspectEntities(args: {
+    metric: string;
+    start: string;
+    end: string;
+    step: InspectStep;
+    limit?: number;
+  }): Promise<EntitiesResponse> {
+    const params = new URLSearchParams({
+      metric: args.metric,
+      start: args.start,
+      end: args.end,
+      step: args.step,
+    });
+    if (args.limit !== undefined) params.set('limit', String(args.limit));
+    return this.request<EntitiesResponse>('GET', `/api/inspect/entities?${params.toString()}`);
+  }
+
+  /** `GET /api/inspect/mqe-target[?refresh=true]` — discovered MQE
+   *  base URL, with operator overrides stitched in. */
+  async inspectMqeTarget(refresh = false): Promise<InspectMqeTargetResponse> {
+    const path = refresh ? '/api/inspect/mqe-target?refresh=true' : '/api/inspect/mqe-target';
+    return this.request<InspectMqeTargetResponse>('GET', path);
+  }
+
+  /** `POST /api/inspect/exec` — fires `mutation execExpression` on
+   *  the resolved MQE base and returns the `ExpressionResult` shape. */
+  async inspectExec(req: InspectExecRequest): Promise<ExpressionResult> {
+    return this.request<ExpressionResult>('POST', '/api/inspect/exec', req);
+  }
+
+  /** `GET /api/preflight` — per-module enablement check against
+   *  OAP's `/debugging/config/dump`. Authenticated, no verb gate. */
+  async preflight(): Promise<PreflightResponse> {
+    return this.request<PreflightResponse>('GET', '/api/preflight');
+  }
+
+  /** `GET /api/inspect/server-time[?refresh=true]` — OAP's UTC
+   *  offset in minutes. SPA uses this to convert browser-local
+   *  dates to server-TZ strings before sending to MQE. */
+  async inspectServerTime(refresh = false): Promise<InspectServerTimeResponse> {
+    const path = refresh ? '/api/inspect/server-time?refresh=true' : '/api/inspect/server-time';
+    return this.request<InspectServerTimeResponse>('GET', path);
   }
 
   /** Trigger a `/api/dump[/{catalog}]` download. Uses an invisible

@@ -118,10 +118,12 @@ rbac:
         - rule:delete
         - rule:debug
         - cluster:read
+        - inspect:read
     viewer:
       verbs:
         - rule:read
         - cluster:read
+        - inspect:read
 ```
 
 A user's effective verbs are the union of their assigned roles'
@@ -152,6 +154,7 @@ page (left nav, bottom).
 | `rule:delete`           | `delete` (default mode)                                                                |
 | `rule:debug`            | live debugger — start / poll / stop debug sessions across MAL / LAL / OAL              |
 | `cluster:read`          | cluster matrix, dsl-debugging status pane                                              |
+| `inspect:read`          | Inspect (SWIP-14) — `/api/inspect/{catalog,metrics,entities,mqe-target,exec}`          |
 | `admin`                 | (reserved — audit-read in a later release)                                             |
 | `*`                     | all of the above (wildcard)                                                            |
 
