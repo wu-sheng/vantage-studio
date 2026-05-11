@@ -21,12 +21,12 @@
 # Replace the password by editing ./.studio-data/studio.yaml after the
 # first run (or before, if you mount a hand-written one in).
 #
-# OAP image: the runtime-rule receiver feature lives on
-# feature/runtime-rule-hot-update upstream and isn't in a tagged
-# release yet. For the demo to reach the relevant /runtime/rule/*
-# endpoints you need an OAP build of that branch — pull a CI image or
-# build locally from ~/github/skywalking and tag it as
-# `apache/skywalking-oap-server:runtime-rule`.
+# OAP image: SWIP-13 (admin-server + runtime-rule + dsl-debugging) and
+# SWIP-14 (inspect) aren't in a tagged release yet. For the demo to
+# reach every /runtime/* + /dsl-debugging/* + /inspect/* surface
+# Studio uses, you need an OAP build of the consolidated branch — pull
+# a CI image or build locally from ~/github/skywalking and tag it as
+# `apache/skywalking-oap-server:admin-server` (matches install.md).
 
 name: vantage-studio
 
@@ -44,20 +44,28 @@ services:
     networks: [vs]
 
   oap:
-    image: apache/skywalking-oap-server:runtime-rule
+    image: apache/skywalking-oap-server:admin-server
     depends_on:
       banyandb:
         condition: service_healthy
     environment:
       SW_STORAGE: banyandb
       SW_STORAGE_BANYANDB_TARGETS: 'banyandb:17912'
+      # All four admin-bound selectors must be set — see install.md.
+      # Without `admin-server`, the other three fail at boot with
+      # `ModuleNotFoundException: admin-server`. Studio's preflight
+      # surface (Cluster status · Required modules) shows which are
+      # on at runtime.
+      SW_ADMIN_SERVER: default
       SW_RECEIVER_RUNTIME_RULE: default
-      # Bind the runtime-rule admin port to the cluster network only.
+      SW_DSL_DEBUGGING: default
+      SW_INSPECT: default
+      # Bind the admin-server port to the cluster network only.
       # Studio reaches it as `oap:17128`; nothing on the host can.
       SW_CORE_REST_HOST: 0.0.0.0
     expose:
-      - '12800' # status / GraphQL
-      - '17128' # runtime-rule admin (BFF-only)
+      - '12800' # status / GraphQL (MQE fires here)
+      - '17128' # admin-server (BFF-only)
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:12800/status/cluster/nodes >/dev/null']
       interval: 5s
