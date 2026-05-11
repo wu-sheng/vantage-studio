@@ -23,12 +23,57 @@
  * who want to find broken rules go to the catalog browse for the
  * relevant DSL; this page stays focused on cluster posture.
  */
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { bff, type ClusterDebugStatus, type PreflightResponse } from '../api/client.js';
 import Pill from '../design/primitives/Pill.vue';
 import StatusDot from '../design/primitives/StatusDot.vue';
 import Btn from '../design/primitives/Btn.vue';
+
+/* Operator-facing poll cadence for the cluster + dsl-debugging
+ * panes. Persisted per-browser so an operator who picks 15s once
+ * doesn't have to re-pick on every visit. Preflight runs on its own
+ * 30s schedule (different concern). */
+type PollChoice = 'off' | '5' | '15' | '60';
+interface PollOption {
+  value: PollChoice;
+  label: string;
+}
+const POLL_OPTIONS: PollOption[] = [
+  { value: 'off', label: 'off' },
+  { value: '5', label: '5s' },
+  { value: '15', label: '15s' },
+  { value: '60', label: '60s' },
+];
+const POLL_KEY = 'vs:cluster:poll:v1';
+function loadPoll(): PollChoice {
+  try {
+    const raw = localStorage.getItem(POLL_KEY);
+    if (raw && POLL_OPTIONS.some((o) => o.value === raw)) return raw as PollChoice;
+  } catch {
+    /* private-browsing / quota — ignore */
+  }
+  return '5';
+}
+const pollChoice = ref<PollChoice>(loadPoll());
+watch(pollChoice, (next) => {
+  try {
+    localStorage.setItem(POLL_KEY, next);
+  } catch {
+    /* ignore */
+  }
+});
+/** Milliseconds for vue-query's `refetchInterval`. `false` disables
+ *  the auto-poll (manual mode); any number triggers the next poll
+ *  after that many ms. Returned via a function so vue-query re-reads
+ *  the ref each tick — flipping the dropdown takes effect immediately
+ *  without remounting the query. */
+const pollMs = computed<number | false>(() =>
+  pollChoice.value === 'off' ? false : Number(pollChoice.value) * 1000,
+);
+const pollLabel = computed(
+  () => POLL_OPTIONS.find((o) => o.value === pollChoice.value)?.label ?? '5s',
+);
 
 /** Per-node reachability slice. The rule-matrix payload is unused
  *  here — clusterState() also surfaces `nodes[]` so we keep using
@@ -36,7 +81,7 @@ import Btn from '../design/primitives/Btn.vue';
 const query = useQuery({
   queryKey: ['cluster/state'],
   queryFn: () => bff.clusterState(),
-  refetchInterval: 5_000,
+  refetchInterval: () => pollMs.value,
   refetchOnWindowFocus: true,
 });
 
@@ -49,7 +94,7 @@ const query = useQuery({
 const debugStatusQuery = useQuery({
   queryKey: ['debug/status'],
   queryFn: (): Promise<ClusterDebugStatus> => bff.debugStatus(),
-  refetchInterval: 5_000,
+  refetchInterval: () => pollMs.value,
   refetchOnWindowFocus: true,
 });
 
@@ -97,9 +142,25 @@ function nodeLabel(url: string): string {
       <h1 class="cs__h1">Cluster status</h1>
       <div class="cs__spacer" />
       <span class="cs__refreshing">
-        <StatusDot :tone="query.isFetching.value ? 'info' : 'ok'" :size="6" />
-        {{ query.isFetching.value ? 'refreshing…' : 'live · 5s' }}
+        <StatusDot
+          :tone="query.isFetching.value ? 'info' : pollChoice === 'off' ? 'dim' : 'ok'"
+          :size="6"
+        />
+        {{
+          query.isFetching.value
+            ? 'refreshing…'
+            : pollChoice === 'off'
+              ? 'manual'
+              : `live · ${pollLabel}`
+        }}
       </span>
+      <label class="cs__pollSelect" title="auto-refresh cadence for cluster + dsl-debugging">
+        <select v-model="pollChoice">
+          <option v-for="o in POLL_OPTIONS" :key="o.value" :value="o.value">
+            {{ o.label }}
+          </option>
+        </select>
+      </label>
       <Btn @click="query.refetch(); preflightQuery.refetch()">refresh now</Btn>
     </header>
 
@@ -358,6 +419,21 @@ function nodeLabel(url: string): string {
 
 .cs__spacer {
   flex: 1 1 auto;
+}
+
+.cs__pollSelect select {
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  padding: 3px 8px;
+  background: var(--rr-bg2);
+  color: var(--rr-ink);
+  border: 1px solid var(--rr-border);
+  border-radius: var(--rr-radius-sm);
+  cursor: pointer;
+}
+.cs__pollSelect select:hover {
+  border-color: var(--rr-border2);
+  color: var(--rr-heading);
 }
 
 .cs__refreshing {
