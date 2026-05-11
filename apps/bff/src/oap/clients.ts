@@ -23,6 +23,7 @@
 
 import {
   DslDebuggingClient,
+  InspectClient,
   OalClient,
   RuntimeRuleClient,
   StatusClient,
@@ -52,6 +53,10 @@ export interface OapClients {
   /** Build a DSL-debugging client for one specific admin URL — used
    *  by the per-node fan-out for `/dsl-debugging/status`. */
   debugForUrl(adminUrl: string): DslDebuggingClient;
+  /** Inspect API client (SWIP-14) — metadata-only catalog + entity
+   *  enumeration. Identical across nodes (storage is shared), so we
+   *  bind to the first admin URL. */
+  inspect(): InspectClient;
   /** All admin URLs, in config order. */
   adminUrls(): readonly string[];
 }
@@ -88,6 +93,9 @@ export function buildOapClients(
     },
     debugForUrl(adminUrl: string): DslDebuggingClient {
       return new DslDebuggingClient({ adminUrl, fetch, timeoutMs });
+    },
+    inspect(): InspectClient {
+      return new InspectClient({ adminUrl: primaryUrl, fetch, timeoutMs });
     },
     adminUrls(): readonly string[] {
       return config.oap.adminUrls;

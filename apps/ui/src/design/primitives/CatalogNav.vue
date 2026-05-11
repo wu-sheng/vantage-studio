@@ -78,6 +78,16 @@ const sections: NavSection[] = [
     ],
   },
   {
+    kicker: 'inspect',
+    links: [
+      {
+        label: 'Inspect',
+        to: '/inspect',
+        active: (p) => p.startsWith('/inspect'),
+      },
+    ],
+  },
+  {
     kicker: 'live debugger',
     links: [
       {

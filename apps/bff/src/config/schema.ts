@@ -55,6 +55,16 @@ const ServerConfig = z.object({
   trustProxy: z.boolean().default(false),
 });
 
+/** MQE (GraphQL `execExpression`) target override. Both fields are
+ *  optional; when omitted, the BFF discovers them from admin's
+ *  `/debugging/config/dump`. Set one or both to override the
+ *  discovered values — useful in k8s setups where admin and REST
+ *  surfaces are reachable through different ingresses. */
+const OapMqeConfig = z.object({
+  host: z.string().min(1).optional(),
+  port: z.number().int().positive().max(65535).optional(),
+});
+
 const OapConfig = z.object({
   /** One or more OAP admin URLs. The BFF fan-outs reads (e.g. `/list`)
    *  to every URL when building the cluster matrix; writes go to the
@@ -66,6 +76,8 @@ const OapConfig = z.object({
    *  Default 10s — long enough for the dump streams; short enough
    *  that a hung OAP doesn't stall the UI indefinitely. */
   timeoutMs: z.number().int().nonnegative().default(10_000),
+  /** Optional MQE-fire override (SWIP-14 inspect). */
+  mqe: OapMqeConfig.optional(),
 });
 
 const LocalUser = z.object({

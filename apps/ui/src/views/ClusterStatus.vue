@@ -25,7 +25,7 @@
  */
 import { computed } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
-import { bff, type ClusterDebugStatus } from '../api/client.js';
+import { bff, type ClusterDebugStatus, type PreflightResponse } from '../api/client.js';
 import Pill from '../design/primitives/Pill.vue';
 import StatusDot from '../design/primitives/StatusDot.vue';
 import Btn from '../design/primitives/Btn.vue';
@@ -54,6 +54,21 @@ const debugStatusQuery = useQuery({
 });
 
 const debugNodes = computed(() => debugStatusQuery.data.value?.nodes ?? []);
+
+/** Preflight — which of Studio's required OAP modules are loaded on
+ *  the admin server. Polled at 30s; refresh-now in the header pokes
+ *  it on demand. */
+const preflightQuery = useQuery<PreflightResponse>({
+  queryKey: ['preflight'],
+  queryFn: () => bff.preflight(),
+  refetchInterval: 30_000,
+  refetchOnWindowFocus: true,
+});
+
+const preflight = computed(() => preflightQuery.data.value ?? null);
+const modules = computed(() => preflight.value?.modules ?? []);
+const missing = computed(() => modules.value.filter((m) => m.required && !m.enabled));
+const adminUnreachable = computed(() => preflight.value !== null && !preflight.value.adminReachable);
 
 function debugStatusBadgeTone(
   ok: boolean,
@@ -85,8 +100,56 @@ function nodeLabel(url: string): string {
         <StatusDot :tone="query.isFetching.value ? 'info' : 'ok'" :size="6" />
         {{ query.isFetching.value ? 'refreshing…' : 'live · 5s' }}
       </span>
-      <Btn @click="query.refetch()">refresh now</Btn>
+      <Btn @click="query.refetch(); preflightQuery.refetch()">refresh now</Btn>
     </header>
+
+    <section class="cs__modules">
+      <header class="cs__sectionhead">
+        required modules
+        <span class="cs__sectionhint">
+          OAP-side selectors Studio needs · sourced from
+          <code>/debugging/config/dump</code>
+        </span>
+      </header>
+
+      <div v-if="!preflight" class="cs__placeholder">loading preflight…</div>
+      <div v-else-if="adminUnreachable" class="cs__placeholder cs__placeholder--err">
+        <StatusDot tone="err" :size="6" />
+        OAP admin unreachable at <code>{{ preflight.adminUrl }}</code>.
+        <span v-if="preflight.adminError" class="cs__moduleErr">{{ preflight.adminError }}</span>
+      </div>
+
+      <table v-else class="cs__modtable">
+        <thead>
+          <tr>
+            <th>module</th>
+            <th>state</th>
+            <th>env var</th>
+            <th>what it gates</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="m in modules" :key="m.name" :class="{ 'cs__modrow--off': !m.enabled }">
+            <td class="cs__modname"><code>{{ m.name }}</code></td>
+            <td>
+              <Pill :tone="m.enabled ? 'ok' : 'err'">
+                {{ m.enabled ? 'enabled' : 'missing' }}
+              </Pill>
+            </td>
+            <td class="cs__modenv">
+              <code v-if="m.enabled">{{ m.envVar }}=default</code>
+              <code v-else class="cs__modenv--missing">{{ m.envVar }}=default</code>
+            </td>
+            <td class="cs__modaffects">{{ m.affects }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p v-if="missing.length > 0" class="cs__modulesHint">
+        Set the env var{{ missing.length === 1 ? '' : 's' }} above on the OAP container and
+        restart. Studio recovers on the next poll without a re-login.
+      </p>
+    </section>
 
     <section class="cs__nodes">
       <header class="cs__sectionhead">nodes</header>
@@ -123,7 +186,6 @@ function nodeLabel(url: string): string {
             <th>health</th>
             <th>injection</th>
             <th>active sessions</th>
-            <th>module / phase</th>
           </tr>
         </thead>
         <tbody>
@@ -146,10 +208,6 @@ function nodeLabel(url: string): string {
               <template v-if="n.ok && n.status">
                 {{ n.status.activeSessions }}
               </template>
-              <span v-else>—</span>
-            </td>
-            <td class="cs__dbgsource">
-              <code v-if="n.ok && n.status">{{ n.status.module }} · {{ n.status.phase }}</code>
               <span v-else>—</span>
             </td>
           </tr>
@@ -215,17 +273,65 @@ function nodeLabel(url: string): string {
   margin-left: 2px;
 }
 
-.cs__dbgsource code {
-  font-family: var(--rr-font-mono);
-  font-size: 14.5px;
-  color: var(--rr-ink2);
-}
-
 .cs__dbgerr {
   margin-left: 8px;
   color: var(--rr-dim);
   font-style: italic;
   font-size: 14.5px;
+}
+
+.cs__modules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cs__modtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15.5px;
+  background: var(--rr-bg2);
+  border: 1px solid var(--rr-border);
+}
+.cs__modtable th,
+.cs__modtable td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--rr-border);
+}
+.cs__modtable th {
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--rr-dim);
+}
+.cs__modname code {
+  font-family: var(--rr-font-mono);
+  font-size: 14.5px;
+  color: var(--rr-heading);
+}
+.cs__modenv code {
+  font-family: var(--rr-font-mono);
+  font-size: 13px;
+  color: var(--rr-ink2);
+}
+.cs__modenv--missing { color: var(--rr-err) !important; }
+.cs__modaffects {
+  color: var(--rr-ink2);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.cs__modrow--off { background: color-mix(in oklab, var(--rr-err) 8%, transparent); }
+.cs__modulesHint {
+  margin: 6px 0 0;
+  font-family: var(--rr-font-mono);
+  font-size: 12.5px;
+  color: var(--rr-dim);
+}
+.cs__moduleErr {
+  margin-left: 8px;
+  font-style: italic;
+  color: var(--rr-dim);
 }
 
 .cs {

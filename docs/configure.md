@@ -41,6 +41,9 @@ oap:
     - http://oap-1:17128 # writes go to the first; reads fan out to all
     - http://oap-2:17128
   statusUrl: http://oap:12800 # OAP query/status plugin (cluster discovery)
+  mqe: # OPTIONAL — overrides discovered MQE base for Inspect (SWIP-14)
+    host: rest.example.com # both fields are independently optional
+    port: 12800 # when omitted, BFF discovers via /debugging/config/dump
 
 auth:
   backend: local # only "local" in v1; OIDC + LDAP later
@@ -92,12 +95,15 @@ debugLog: # OPTIONAL — wire-level capture for integration testing
 | `adminUrls` | yes      | Array of base URLs to OAP's `admin-server` (default port `17128` — same port runtime-rule used standalone before SWIP-13). The BFF fans `/runtime/rule/list` out across every URL for the cluster matrix and fans `/dsl-debugging/status` for the debugger health pane. **Writes** (`addOrUpdate`, `inactivate`, `delete`) hit only the first URL — OAP's forward-RPC handles peer convergence. **Live debugger** session installs hit the first URL too; OAP itself broadcasts `InstallDebugSession` cluster-wide. |
 | `statusUrl` | yes      | OAP query/status plugin URL (default `12800`). Used for `/status/cluster/nodes` lookups.                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `timeoutMs` | no       | Per-call timeout (ms) for every BFF→OAP request. Default `10000`. Set to `0` to disable. The cluster fan-out shares this timeout per node — a slow node times out individually without stalling the whole call.                                                                                                                                                                                                                                                                                                     |
+| `mqe.host`  | no       | MQE-fire override for the Inspect feature (SWIP-14). When set, the BFF uses this host instead of the one discovered through admin's `/debugging/config/dump`. Useful in k8s setups where the admin port and the public REST port are reachable through different ingress hostnames. Independent of `mqe.port`.                                                                                                                                                                                                      |
+| `mqe.port`  | no       | MQE-fire port override. Same semantics as `mqe.host`. Set either, both, or neither — the BFF stitches in whichever is missing from the discovery path (sharing-server REST → core REST, host falling back to the admin URL when the bound host is `0.0.0.0`).                                                                                                                                                                                                                                                       |
 
-> **OAP-side opt-in.** The admin-server, runtime-rule, and dsl-debugging
-> selectors all default to empty on OAP. Set
-> `SW_ADMIN_SERVER=default`, `SW_RECEIVER_RUNTIME_RULE=default`, and
-> `SW_DSL_DEBUGGING=default` on the OAP container so the URLs Studio
-> calls actually exist. See [`install.md`](install.md) for details.
+> **OAP-side opt-in.** The admin-server, runtime-rule, dsl-debugging,
+> and inspect selectors all default to empty on OAP. Set
+> `SW_ADMIN_SERVER=default`, `SW_RECEIVER_RUNTIME_RULE=default`,
+> `SW_DSL_DEBUGGING=default`, and `SW_INSPECT=default` on the OAP
+> container so the URLs Studio calls actually exist. See
+> [`install.md`](install.md) for details.
 
 ### `auth`
 
@@ -135,6 +141,7 @@ Verb table:
 | `rule:delete`           | `delete` (default mode)                                                                |
 | `rule:debug`            | live debugger — start / poll / stop debug sessions across MAL / LAL / OAL              |
 | `cluster:read`          | cluster matrix, dsl-debugging status pane                                              |
+| `inspect:read`          | Inspect (SWIP-14) — `/api/inspect/{catalog,metrics,entities,mqe-target,exec}`          |
 | `admin`                 | (reserved — audit-read in a later release)                                             |
 | `*`                     | all of the above                                                                       |
 

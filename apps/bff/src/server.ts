@@ -32,6 +32,8 @@ import { registerAuthRoutes } from './auth/routes.js';
 import type { VerifyDeps } from './auth/local.js';
 import { registerOapRoutes } from './oap/routes.js';
 import { registerDebugRoutes } from './oap/debug-routes.js';
+import { registerInspectRoutes } from './oap/inspect-routes.js';
+import { registerPreflightRoutes } from './oap/preflight-routes.js';
 import { createNoopWireLogger, type WireLogger } from './wire/logger.js';
 import { makeWireFetch } from './wire/fetch.js';
 import { registerWireHook } from './wire/hook.js';
@@ -114,6 +116,19 @@ export async function buildServer(opts: BuildServerOptions): Promise<BuiltServer
     config: opts.config,
     sessions,
     audit: opts.audit,
+    fetch: wrappedFetch,
+  });
+
+  registerInspectRoutes(app, {
+    config: opts.config,
+    sessions,
+    audit: opts.audit,
+    fetch: wrappedFetch,
+  });
+
+  registerPreflightRoutes(app, {
+    config: opts.config,
+    sessions,
     fetch: wrappedFetch,
   });
 
